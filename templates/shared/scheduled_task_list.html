@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block title %}{{ page_title }} - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>{{ page_title }}</h1><p>{{ page_subtitle }}</p></header>{% endblock %}
+{% block content %}
+<section class="panel">
+    <div class="section-heading">
+        <div>
+            <h2>任务列表</h2>
+            <p>包含定时上架、循环更新和已排队的自动替换任务。</p>
+        </div>
+        {% if is_master %}
+            <a class="btn btn-light" href="{% url 'master-operations' %}">查看全局任务</a>
+        {% else %}
+            <a class="btn btn-success" href="{% url 'user-content-upload' %}">上传新内容</a>
+        {% endif %}
+    </div>
+    <div class="table-wrap">
+        <table class="task-table">
+            <thead>
+            <tr>
+                <th>编号/标题</th>
+                {% if is_master %}<th>子账号</th>{% endif %}
+                <th>频道</th>
+                <th>规则</th>
+                <th>下一次执行</th>
+                <th>执行次数</th>
+                <th>最近执行</th>
+                <th>队列</th>
+                <th>状态</th>
+                <th>操作</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+            <tr>
+                <td>
+                    <strong>{{ row.content.code }}</strong>
+                    <small>{{ row.content.title }}</small>
+                </td>
+                {% if is_master %}<td>{{ row.content.owner_user.label }}<small>{{ row.content.owner_user.username }}</small></td>{% endif %}
+                <td class="task-channels">{{ row.channel_names }}</td>
+                <td class="task-rule">{{ row.rule_label }}</td>
+                <td>{% if row.content.next_run_at %}{{ row.content.next_run_at|date:'Y-m-d H:i' }}{% else %}-{% endif %}</td>
+                <td><strong>{{ row.execution_count }}</strong><small>失败 {{ row.failed_count }} / 待核 {{ row.uncertain_count }}</small></td>
+                <td>{% if row.last_run_at %}{{ row.last_run_at|date:'Y-m-d H:i' }}{% else %}-{% endif %}</td>
+                <td>排队 {{ row.queued_count }}<small>执行中 {{ row.running_count }}</small></td>
+                <td><span class="status {{ row.status_class }}">{{ row.status_label }}</span></td>
+                <td>
+                    <div class="actions-row task-actions">
+                        {% if row.can_stop %}
+                        <form method="post" action="{% url stop_url_name row.content.pk %}" data-confirm="确定中止该定时/循环任务吗？">
+                            {% csrf_token %}
+                            <button class="btn btn-small btn-danger" type="submit">中止</button>
+                        </form>
+                        {% endif %}
+                        {% if is_master %}
+                            <a class="btn btn-small btn-light" href="{% url 'master-operations' %}">日志</a>
+                        {% else %}
+                            <a class="btn btn-small btn-light" href="{% url 'user-content-logs' row.content.pk %}">日志</a>
+                            <a class="btn btn-small btn-primary" href="{% url 'user-content-view' row.content.pk %}">查看</a>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="{% if is_master %}10{% else %}9{% endif %}" class="empty">{{ empty_text }}</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

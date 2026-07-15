@@ -28,6 +28,8 @@ C:\Users\17630\AppData\Local\Programs\Python\Python312\python.exe
 python -m pip install -r requirements.txt
 ```
 
+简繁转换依赖使用纯 Python 包 `opencc-python-reimplemented`，导入名仍是 `opencc`，Linux 部署时不需要额外安装系统级 `libopencc`。
+
 ## 本地启动
 
 项目固定使用 MySQL。项目根目录的 `.env` 保存本机配置且已加入 `.gitignore`，PyCharm 直接运行时会自动加载。

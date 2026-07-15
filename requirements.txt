@@ -4,4 +4,4 @@ aiohttp-socks==0.11.0
 PyMySQL==1.2.0
 cryptography==49.0.0
 Pillow==12.3.0
-OpenCC>=1.1.9,<2.0
+opencc-python-reimplemented>=0.1.7,<0.2.0

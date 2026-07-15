@@ -190,7 +190,12 @@ class BotChannelBindingEditForm(forms.ModelForm):
 
 
 class ContentForm(forms.ModelForm):
-    channels = forms.ModelMultipleChoiceField(label="发送频道", queryset=TelegramChannel.objects.none(), required=True)
+    channels = forms.ModelMultipleChoiceField(
+        label="发送频道",
+        queryset=TelegramChannel.objects.none(),
+        required=True,
+        widget=forms.CheckboxSelectMultiple(attrs={"class": "channel-check-input"}),
+    )
     files_primary = MultipleFileField(
         label="第一次发送：图片/视频",
         required=False,

@@ -29,7 +29,7 @@
 
 ### 0.1 2026-07-12 已确认的内容投递规则
 
-- 内容增加“简体/繁体”发送选项，默认简体；选择繁体时，发送前使用 OpenCC `s2t` 转换，数据库仍保存用户原始输入。
+- 内容增加“简体/繁体”发送选项，默认简体；选择繁体时，发送前通过 `opencc-python-reimplemented` 提供的 OpenCC `s2t` 转换，数据库仍保存用户原始输入。
 - 同一内容的 Operation 严格按创建顺序执行；较早的 `QUEUED/RUNNING` 任务未结束时，后续任务不能越过。
 - 首次上架使用 `SEND`。已上架内容到达循环时间时使用强制 `REPLACE`：先发新批次，成功后删除旧批次。
 - 已上架内容通过网页或 `/编辑` 修改后，不再原地同步编辑；统一使用强制 `REPLACE`，即先重发新消息，成功后删除旧消息。
@@ -53,6 +53,13 @@
 - Bot `/重发` 指令及帮助入口已删除；部署迁移时取消尚未执行的历史 `COPY` 任务和待确认动作。
 - 内容编辑、定时和循环更新仍使用 `REPLACE` 替换发布：先发送完整新批次，成功后删除旧批次；这属于版本替换，不是用户手动重发。
 - 历史 `COPY` Operation 仅保留用于审计展示，不再创建或执行。
+
+### 0.4 2026-07-15 定时/循环任务可视化
+
+- 子账号新增 `/user/tasks`，只展示当前子账号自己的定时上架、循环更新、执行次数、最近执行、下一次执行和队列状态。
+- 主账号新增 `/master/tasks`，展示名下全部子账号的定时/循环任务，增加子账号列，便于统一排查。
+- 两个页面都提供“中止”按钮：清空内容的 `publish_at/cycle_days/cycle_time/next_run_at`，并取消仍在排队或待确认的 Scheduler 自动任务。
+- 中止动作写入 `scheduled_task.stop` 审计，记录中止前后的时间配置和被取消的排队任务数量。
 
 ## 1. 结论先行
 
@@ -162,6 +169,7 @@ Bot  N ─── N Channel
 - 蓝色主操作、绿色新增/成功、红色下架/危险、灰色编辑；
 - 内容列表桌面端三列卡片，卡片下方保持“下架/查看/编辑/删除/发送记录”的动作排列；
 - 上传和编辑页保持分块表单、媒体预览、拖拽排序、上传进度；
+- 上传和编辑页的频道选择使用复选框打勾形式，支持直接勾选一个或多个频道；
 - 个人中心保持账号信息、账号管理、内容入口、Bot 上传设置四个区域；
 - 手机端改为单列卡片和可换行按钮，不另做一套移动页面。
 
@@ -174,6 +182,7 @@ Bot  N ─── N Channel
 ```text
 /user/profile
 /user/contents
+/user/tasks
 /user/content/upload
 /user/content/view/<id>
 /user/content/edit/<id>
@@ -186,6 +195,7 @@ Bot  N ─── N Channel
 POST /user/content/<id>/publish
 POST /user/content/<id>/unpublish
 POST /user/content/<id>/delete
+POST /user/tasks/<id>/stop
 ```
 
 ### 3.3 主账号端：同站点后台
@@ -198,6 +208,7 @@ POST /user/content/<id>/delete
 业务总览
 子账号管理
 频道与 Bot
+定时任务
 全局任务
 操作审计
 账号设置
@@ -213,6 +224,7 @@ POST /user/content/<id>/delete
 /master/subaccounts/<id>/contents
 /master/subaccounts/<id>/operations
 /master/telegram
+/master/tasks
 /master/operations
 /master/audits
 /master/profile
@@ -925,6 +937,7 @@ Bot  N ─── N Channel
 - 蓝色主操作、绿色新增/成功、红色下架/危险、灰色编辑；
 - 内容列表桌面端三列卡片，卡片下方保持“下架/查看/编辑/删除/发送记录”的动作排列；
 - 上传和编辑页保持分块表单、媒体预览、拖拽排序、上传进度；
+- 上传和编辑页的频道选择使用复选框打勾形式，支持直接勾选一个或多个频道；
 - 个人中心保持账号信息、账号管理、内容入口、Bot 上传设置四个区域；
 - 手机端改为单列卡片和可换行按钮，不另做一套移动页面。
 
@@ -937,6 +950,7 @@ Bot  N ─── N Channel
 ```text
 /user/profile
 /user/contents
+/user/tasks
 /user/content/upload
 /user/content/view/<id>
 /user/content/edit/<id>
@@ -949,6 +963,7 @@ Bot  N ─── N Channel
 POST /user/content/<id>/publish
 POST /user/content/<id>/unpublish
 POST /user/content/<id>/delete
+POST /user/tasks/<id>/stop
 ```
 
 ### 3.3 主账号端：同站点后台
@@ -961,6 +976,7 @@ POST /user/content/<id>/delete
 业务总览
 子账号管理
 频道与 Bot
+定时任务
 全局任务
 操作审计
 账号设置
@@ -976,6 +992,7 @@ POST /user/content/<id>/delete
 /master/subaccounts/<id>/contents
 /master/subaccounts/<id>/operations
 /master/telegram
+/master/tasks
 /master/operations
 /master/audits
 /master/profile

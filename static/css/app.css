@@ -121,6 +121,43 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
 .text-variant > strong, .text-variant > .hint { display: block; }
 .text-variant ul { display: flex; gap: 18px; list-style: none; padding: 8px 0 0; margin: 0; }
 .text-variant li label { display: inline-flex; align-items: center; gap: 6px; }
+.channel-picker { margin: 0 0 14px; }
+.channel-picker > label, .channel-picker > .hint { display: block; }
+.channel-picker #id_channels {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+}
+.channel-picker #id_channels > div { margin: 0; }
+.channel-picker #id_channels label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 42px;
+    margin: 0;
+    padding: 9px 11px;
+    border: 1px solid #cfdae8;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+    transition: .16s ease;
+}
+.channel-picker #id_channels label:hover {
+    border-color: var(--primary);
+    box-shadow: 0 2px 8px rgba(49,89,232,.1);
+}
+.channel-picker #id_channels label:has(input:checked) {
+    border-color: var(--primary);
+    background: #eef3ff;
+    color: var(--primary);
+}
+.channel-picker input[type=checkbox] {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    accent-color: var(--primary);
+}
 
 .search-panel { padding: 12px; }
 .search-panel form { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
@@ -157,6 +194,11 @@ th, td { padding: 10px 9px; border-bottom: 1px solid #e7ecf2; text-align: left; 
 .operation-error { min-width: 260px; max-width: 520px; white-space: normal; overflow-wrap: anywhere; }
 .operation-error summary { cursor: pointer; color: var(--danger); font-weight: 700; }
 .operation-error details div { margin-top: 6px; color: #7f1d1d; }
+.task-table td { vertical-align: top; }
+.task-rule { min-width: 210px; white-space: normal; }
+.task-channels { max-width: 220px; white-space: normal; overflow-wrap: anywhere; }
+.task-actions { justify-content: flex-start; flex-wrap: nowrap; }
+.task-actions form { margin: 0; }
 th { font-size: 12px; color: #667287; background: #f7f9fc; }
 td small { display: block; color: var(--muted); }
 .empty { padding: 28px; text-align: center; color: var(--muted); }

@@ -6,6 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
+from datetime import time, timedelta
 import tempfile
 from io import BytesIO
 from PIL import Image
@@ -92,6 +93,13 @@ class ManagerFoundationTests(TestCase):
         self.assertContains(response, "data-channel-result-dialog")
         self.assertContains(response, "data-copy-channel-id")
 
+    def test_upload_page_uses_checkbox_channel_picker(self):
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-content-upload"))
+        self.assertContains(response, 'class="channel-picker"')
+        self.assertContains(response, 'type="checkbox"')
+        self.assertNotContains(response, '<select name="channels"')
+
     def test_channel_supports_multiple_bots_with_distinct_priority(self):
         bot1 = TelegramBot.objects.create(display_name="A", token_ciphertext="encrypted-a", created_by=self.master)
         bot2 = TelegramBot.objects.create(display_name="B", token_ciphertext="encrypted-b", created_by=self.master)
@@ -152,6 +160,102 @@ class ManagerFoundationTests(TestCase):
         operation = Operation.objects.get(target_id=str(content.pk))
         self.assertEqual(operation.source, Operation.Source.SCHEDULER)
         self.assertEqual(operation.action, Operation.Action.SEND)
+
+    def test_scheduled_task_pages_are_scoped(self):
+        run_at = timezone.now() + timedelta(days=1)
+        own = Content.objects.create(
+            owner_user=self.sub1,
+            code="task-1",
+            title="甲定时",
+            publish_at=run_at,
+            next_run_at=run_at,
+            cycle_days=1,
+            cycle_time=time(4, 0),
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        own.channels.add(self.channel)
+        other = Content.objects.create(
+            owner_user=self.sub2,
+            code="task-2",
+            title="乙定时",
+            publish_at=run_at,
+            next_run_at=run_at,
+            created_by=self.sub2,
+            updated_by=self.sub2,
+        )
+
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-tasks"))
+        self.assertContains(response, "甲定时")
+        self.assertContains(response, "每 1 天 04:00")
+        self.assertNotContains(response, "乙定时")
+
+        self.client.force_login(self.master)
+        response = self.client.get(reverse("master-tasks"))
+        self.assertContains(response, "甲定时")
+        self.assertContains(response, "乙定时")
+        self.assertContains(response, self.sub1.username)
+        self.assertContains(response, self.sub2.username)
+
+    def test_subaccount_can_stop_scheduled_task_and_cancel_scheduler_queue(self):
+        run_at = timezone.now() + timedelta(days=1)
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="task-stop",
+            title="待中止任务",
+            publish_at=run_at,
+            next_run_at=run_at,
+            cycle_days=2,
+            cycle_time=time(6, 30),
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        operation = Operation.objects.create(
+            owner_user=self.sub1,
+            actor_type=Operation.ActorType.SYSTEM,
+            actor_id="scheduler",
+            source=Operation.Source.SCHEDULER,
+            action=Operation.Action.REPLACE,
+            target_type="content",
+            target_id=str(content.pk),
+            request_json={"reason": "SCHEDULED_UPDATE"},
+            idempotency_key="task-stop-queue",
+            state=Operation.State.QUEUED,
+            available_at=timezone.now(),
+        )
+
+        self.client.force_login(self.sub1)
+        response = self.client.post(reverse("user-task-stop", args=[content.pk]))
+        self.assertRedirects(response, reverse("user-tasks"), fetch_redirect_response=False)
+        content.refresh_from_db()
+        operation.refresh_from_db()
+        self.assertIsNone(content.publish_at)
+        self.assertIsNone(content.next_run_at)
+        self.assertIsNone(content.cycle_days)
+        self.assertIsNone(content.cycle_time)
+        self.assertEqual(operation.state, Operation.State.CANCELLED)
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_task.stop", object_id=str(content.pk)).exists())
+
+    def test_master_can_stop_subaccount_scheduled_task(self):
+        run_at = timezone.now() + timedelta(days=2)
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="master-stop",
+            title="主账号中止",
+            publish_at=run_at,
+            next_run_at=run_at,
+            cycle_days=3,
+            cycle_time=time(8, 0),
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        self.client.force_login(self.master)
+        response = self.client.post(reverse("master-task-stop", args=[content.pk]))
+        self.assertRedirects(response, reverse("master-tasks"), fetch_redirect_response=False)
+        content.refresh_from_db()
+        self.assertIsNone(content.next_run_at)
+        self.assertIsNone(content.cycle_days)
 
     def test_published_content_must_be_unpublished_before_archive(self):
         content = Content.objects.create(

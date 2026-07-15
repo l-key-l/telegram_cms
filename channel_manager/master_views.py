@@ -25,6 +25,7 @@ from .models import AuditEvent, BotChannelBinding, Content, Operation, TelegramB
 from .permissions import master_required
 from .security import decrypt_secret, mask_secret
 from .services import enqueue_operation
+from .task_utils import build_scheduled_task_rows, scheduled_content_q, stop_scheduled_task
 
 
 @master_required
@@ -425,6 +426,39 @@ def channel_edit(request, pk: int):
 def operation_list(request):
     items = Operation.objects.filter(Q(owner_user=request.user) | Q(owner_user__parent=request.user)).select_related("owner_user")[:200]
     return render(request, "master/operation_list.html", {"items": items})
+
+
+@master_required
+def scheduled_tasks(request):
+    contents_qs = (
+        Content.objects.filter(owner_user__parent=request.user, deleted_at__isnull=True)
+        .filter(scheduled_content_q())
+        .select_related("owner_user")
+        .prefetch_related("channels")
+        .order_by("next_run_at", "-updated_at")
+    )
+    rows = build_scheduled_task_rows(contents_qs)
+    return render(
+        request,
+        "shared/scheduled_task_list.html",
+        {
+            "rows": rows,
+            "is_master": True,
+            "stop_url_name": "master-task-stop",
+            "page_title": "定时/循环任务",
+            "page_subtitle": "查看全部子账号的定时上架、循环更新、执行次数和下一次执行时间",
+            "empty_text": "暂无子账号定时或循环任务。",
+        },
+    )
+
+
+@master_required
+@require_POST
+def scheduled_task_stop(request, pk: int):
+    content = get_object_or_404(Content, pk=pk, owner_user__parent=request.user, deleted_at__isnull=True)
+    cancelled_count = stop_scheduled_task(request=request, actor=request.user, content=content)
+    messages.success(request, f"任务已中止，已取消排队任务 {cancelled_count} 个。")
+    return redirect("master-tasks")
 
 
 @master_required

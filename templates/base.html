@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ product_name }}{% endblock %}</title>
     <link rel="icon" href="{% static 'img/favicon.svg' %}" type="image/svg+xml">
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260714-3">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260715-2">
 </head>
 <body>
 <main class="site-shell {% block shell_class %}{% endblock %}">
@@ -20,11 +20,13 @@
                 <a href="{% url 'master-dashboard' %}" class="btn btn-primary">业务总览</a>
                 <a href="{% url 'master-subaccounts' %}" class="btn btn-light">子账号</a>
                 <a href="{% url 'master-telegram' %}" class="btn btn-success">频道与 Bot</a>
+                <a href="{% url 'master-tasks' %}" class="btn btn-light">定时任务</a>
                 <a href="{% url 'master-operations' %}" class="btn btn-light">全局任务</a>
                 <a href="{% url 'master-audits' %}" class="btn btn-light">操作审计</a>
             {% else %}
                 <a href="{% url 'user-contents' %}" class="btn btn-primary">我的内容</a>
                 <a href="{% url 'user-contents' %}?status=unpublished" class="btn btn-light">已下架内容</a>
+                <a href="{% url 'user-tasks' %}" class="btn btn-light">定时任务</a>
                 <a href="{% url 'user-content-upload' %}" class="btn btn-success">上传新内容</a>
                 <a href="{% url 'user-profile' %}" class="btn btn-light">返回个人中心</a>
             {% endif %}

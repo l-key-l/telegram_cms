@@ -18,6 +18,7 @@ from .forms import ContentForm, ExternalMessageActionForm, TelegramAdminIdsForm
 from .models import Content, ContentFile, Operation, TelegramUserLink, UserChannelAccess
 from .permissions import sub_required
 from .services import attach_files, enqueue_content_operation, enqueue_operation, next_content_identity, sync_content_channels
+from .task_utils import build_scheduled_task_rows, scheduled_content_q, stop_scheduled_task
 
 
 def _owned_content(request, pk: int):
@@ -50,6 +51,38 @@ def contents(request):
         "user/contents.html",
         {"items": page_obj, "page_obj": page_obj, "status_filter": status, "q": query, "page_nonce": uuid.uuid4().hex},
     )
+
+
+@sub_required
+def scheduled_tasks(request):
+    contents_qs = (
+        Content.objects.filter(owner_user=request.user, deleted_at__isnull=True)
+        .filter(scheduled_content_q())
+        .prefetch_related("channels")
+        .order_by("next_run_at", "-updated_at")
+    )
+    rows = build_scheduled_task_rows(contents_qs)
+    return render(
+        request,
+        "shared/scheduled_task_list.html",
+        {
+            "rows": rows,
+            "is_master": False,
+            "stop_url_name": "user-task-stop",
+            "page_title": "定时/循环任务",
+            "page_subtitle": "查看自己的定时上架、循环更新、执行次数和下一次执行时间",
+            "empty_text": "暂无定时或循环任务。",
+        },
+    )
+
+
+@sub_required
+@require_POST
+def scheduled_task_stop(request, pk: int):
+    content = _owned_content(request, pk)
+    cancelled_count = stop_scheduled_task(request=request, actor=request.user, content=content)
+    messages.success(request, f"任务已中止，已取消排队任务 {cancelled_count} 个。")
+    return redirect("user-tasks")
 
 
 @sub_required
