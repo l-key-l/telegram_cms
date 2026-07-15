@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block title %}登录 - {{ product_name }}{% endblock %}
+{% block shell_class %}login-shell{% endblock %}
+{% block page_header %}
+<header class="page-title"><h1>{{ product_name }}</h1><p>主账号与子账号统一登录</p></header>
+{% endblock %}
+{% block content %}
+<section class="panel login-panel">
+    <h2>账号登录</h2>
+    <form method="post" class="styled-form">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button class="btn btn-primary btn-block" type="submit">登录</button>
+    </form>
+</section>
+{% endblock %}

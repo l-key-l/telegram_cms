@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}指定消息操作 - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>指定消息操作</h1><p>通过频道和 Telegram Message ID 编辑或删除指定消息</p></header>{% endblock %}
+{% block content %}
+<section class="panel form-panel">
+  <form method="post" class="styled-form" data-confirm="该操作将直接修改 Telegram 频道消息，确定继续吗？">
+    {% csrf_token %}<input type="hidden" name="idempotency_key" value="{{ page_nonce }}">
+    {{ form.as_p }}
+    <button class="btn btn-danger" type="submit">加入操作队列</button>
+  </form>
+</section>
+<section class="panel"><h2>最近操作</h2>{% include 'partials/operation_table.html' with items=operations %}</section>
+{% endblock %}

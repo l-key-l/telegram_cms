@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block title %}业务总览 - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>主账号后台</h1><p>管理子账号、频道、Bot 和全局任务</p></header>{% endblock %}
+{% block content %}
+<section class="stat-grid">
+    <a class="stat-card" href="{% url 'master-subaccounts' %}"><span>子账号</span><strong>{{ subaccount_count }}</strong><small>启用 {{ active_subaccount_count }}</small></a>
+    <div class="stat-card"><span>业务内容</span><strong>{{ content_count }}</strong><small>全部子账号</small></div>
+    <a class="stat-card" href="{% url 'master-operations' %}"><span>排队任务</span><strong>{{ queued_count }}</strong><small>等待 Worker</small></a>
+    <a class="stat-card" href="{% url 'master-telegram' %}"><span>Bot / 频道</span><strong>{{ bot_count }} / {{ channel_count }}</strong><small>多对多预留</small></a>
+</section>
+<section class="panel">
+    <div class="section-heading"><div><h2>最近任务</h2><p>查看各子账号最近执行状态</p></div><a class="btn btn-light" href="{% url 'master-operations' %}">查看全部</a></div>
+    {% include 'partials/operation_table.html' with items=recent_operations %}
+</section>
+{% endblock %}

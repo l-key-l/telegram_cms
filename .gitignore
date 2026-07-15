@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.log
+.env
+.venv/
+venv/
+media/*
+!media/.gitkeep
+staticfiles/
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+work/

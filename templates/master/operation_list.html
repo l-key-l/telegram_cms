@@ -1,0 +1,4 @@
+{% extends 'base.html' %}
+{% block title %}全局任务 - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>全局任务</h1><p>查看所有子账号的发送、编辑、替换和删除任务</p></header>{% endblock %}
+{% block content %}<section class="panel">{% include 'partials/operation_table.html' with items=items %}</section>{% endblock %}

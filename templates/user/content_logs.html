@@ -1,0 +1,4 @@
+{% extends 'base.html' %}
+{% block title %}发送记录 - {{ content.title }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>发送记录</h1><p>{{ content.title }} · 编号 {{ content.code }}</p></header>{% endblock %}
+{% block content %}<section class="panel">{% include 'partials/operation_table.html' with items=operations %}</section>{% endblock %}

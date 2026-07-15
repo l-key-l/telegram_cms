@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block title %}子账号管理 - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>子账号管理</h1><p>创建、停用、分配频道和查看业务状态</p></header>{% endblock %}
+{% block content %}
+<section class="panel">
+    <div class="section-heading"><div><h2>全部子账号</h2><p>共 {{ items|length }} 个账号</p></div><a class="btn btn-success" href="{% url 'master-subaccount-create' %}">创建子账号</a></div>
+    <div class="table-wrap"><table><thead><tr><th>账号</th><th>昵称</th><th>状态</th><th>内容</th><th>频道</th><th>创建时间</th><th></th></tr></thead><tbody>
+    {% for item in items %}<tr><td>{{ item.username }}</td><td>{{ item.display_name|default:'-' }}</td><td><span class="status status-{{ item.is_active|yesno:'success,danger' }}">{{ item.is_active|yesno:'正常,已停用' }}</span></td><td>{{ item.content_count }}</td><td>{{ item.channel_count }}</td><td>{{ item.date_joined|date:'Y-m-d H:i' }}</td><td><a class="btn btn-small btn-primary" href="{% url 'master-subaccount-detail' item.pk %}">管理</a></td></tr>{% empty %}<tr><td colspan="7" class="empty">暂时没有子账号</td></tr>{% endfor %}
+    </tbody></table></div>
+</section>
+{% endblock %}

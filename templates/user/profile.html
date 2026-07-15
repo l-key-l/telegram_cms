@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}个人中心 - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>个人中心</h1><p>管理您的个人信息</p></header>{% endblock %}
+{% block content %}
+<section class="info-card account-info"><div><b>用户名：</b>{{ user.username }}</div><div><b>昵称：</b>{{ user.display_name|default:'未设置' }}</div><div><b>注册时间：</b>{{ user.date_joined|date:'Y-m-d H:i:s' }}</div></section>
+<section><h2 class="outside-heading">账号管理</h2><div class="panel"><form method="post" class="styled-form inline-settings">{% csrf_token %}<input type="hidden" name="action" value="profile">{{ profile_form.as_p }}<button class="btn btn-primary" type="submit">修改昵称</button></form></div></section>
+<section><h2 class="outside-heading">内容管理</h2><div class="three-actions"><a class="btn btn-success" href="{% url 'user-contents' %}">我的内容</a><a class="btn btn-success" href="{% url 'user-contents' %}?status=unpublished">已下架内容</a><a class="btn btn-success" href="{% url 'user-content-upload' %}">上传内容</a></div></section>
+<section><h2 class="outside-heading">Bot 上传设置</h2><div class="panel bot-setting"><p class="hint">绑定 Telegram 管理员数字 ID 后，这些账号可以通过 Bot 执行内容操作。</p><form method="post" class="styled-form">{% csrf_token %}<input type="hidden" name="action" value="telegram">{{ admin_form.as_p }}<button class="btn btn-primary" type="submit">保存</button></form>{% if links %}<div class="linked-list"><b>已绑定：</b>{% for link in links %}<span>@{{ link.bot.username|default:link.bot.display_name }} / {{ link.telegram_user_id }}</span>{% endfor %}</div>{% endif %}<div class="command-help"><b>Bot 可用命令：</b><br>· 查询ID<br>· /上架 编号<br>· /下架 编号<br>· /编辑 编号 新文字<br>· /状态 编号<br>· /确认 确认码<br>· /取消</div></div></section>
+{% endblock %}

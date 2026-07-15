@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}{{ content.title }} - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>{{ content.title }}</h1><p>编号 {{ content.code }} · {{ content.get_status_display }}</p></header>{% endblock %}
+{% block content %}
+<section class="info-card"><div><b>创建时间：</b>{{ content.created_at|date:'Y-m-d H:i:s' }}</div><div><b>发送文字：</b>{{ content.get_text_variant_display }}{% if content.text_variant == 'TRADITIONAL' %}（发送前自动转换）{% endif %}</div><div><b>循环：</b>{% if content.cycle_days %}每 {{ content.cycle_days }} 天 {{ content.cycle_time|default:'' }}{% else %}未启用{% endif %}</div><div><b>频道：</b>{% for channel in content.channels.all %}{{ channel.title }}{% if not forloop.last %}、{% endif %}{% endfor %}</div></section>
+<section class="panel"><h2>文字说明</h2><div class="content-text">{{ content.text|linebreaksbr|default:'无文字' }}</div></section>
+<section class="panel"><h2>媒体文件</h2><div class="media-gallery">{% for file in content.files.all %}<div class="media-tile"><span>第 {{ file.group_no }} 组 · {{ file.get_media_type_display }}</span>{% if file.media_type == 'PHOTO' %}<img src="{{ file.file.url }}">{% elif file.media_type == 'VIDEO' %}<video controls src="{{ file.file.url }}"></video>{% else %}<a href="{{ file.file.url }}">{{ file.file.name }}</a>{% endif %}</div>{% empty %}<div class="empty">没有媒体文件</div>{% endfor %}</div></section>
+<section class="panel"><p class="hint">已上架内容保存编辑后会发布新版本，新版本成功后再删除旧消息。</p><div class="actions-row"><a class="btn btn-dark" href="{% url 'user-content-edit' content.pk %}">编辑</a><a class="btn btn-success-light" href="{% url 'user-content-logs' content.pk %}">发送记录</a></div></section>
+{% endblock %}

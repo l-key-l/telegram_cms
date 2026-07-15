@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}{% if status_filter == 'unpublished' %}已下架内容{% else %}我的内容{% endif %} - {{ product_name }}{% endblock %}
+{% block page_header %}<header class="page-title"><h1>{% if status_filter == 'unpublished' %}已下架内容{% else %}我的内容{% endif %}</h1><p>管理您上传的所有内容</p></header>{% endblock %}
+{% block content %}
+<section class="search-panel"><form method="get"><input type="hidden" name="status" value="{{ status_filter }}"><label>⌕ 搜索：</label><input type="search" name="q" value="{{ q }}" placeholder="编号、地区、关键词…"><button class="btn btn-primary" type="submit">搜索</button></form></section>
+<form id="bulk-form" method="post" action="{% url 'user-contents-bulk' %}" class="bulk-toolbar" data-confirm="确定对选中的内容执行批量操作吗？">{% csrf_token %}<input type="hidden" name="status" value="{{ status_filter }}"><input type="hidden" name="page_nonce" value="{{ page_nonce }}"><label class="bulk-select-all"><input type="checkbox" data-select-all="content-selection"> 全选本页</label><span class="bulk-count" data-selection-count>已选择 0 条</span><div class="bulk-actions">{% if status_filter == 'unpublished' %}<button class="btn btn-small btn-success" type="submit" name="bulk_action" value="publish">批量上架</button><button class="btn btn-small btn-danger-light" type="submit" name="bulk_action" value="archive">批量删除</button>{% else %}<button class="btn btn-small btn-danger" type="submit" name="bulk_action" value="unpublish">批量下架</button>{% endif %}</div></form>
+<section class="content-grid">
+{% for item in items %}<article class="content-card">
+    <div class="preview-area">
+        <label class="content-selector" title="选择 {{ item.title }}"><input type="checkbox" name="content_ids" value="{{ item.pk }}" form="bulk-form" data-selection="content-selection"><span>选择</span></label>
+        <span class="media-badge">{% if item.files.count %}▣ 混合{% else %}▤ 文字{% endif %}</span>
+        <span class="publish-badge">{% if item.status == 'PUBLISHED' %}✓ 已上架{% else %}○ {{ item.get_status_display }}{% endif %}</span>
+        {% with first=item.files.first %}{% if first and first.media_type == 'PHOTO' %}<img src="{{ first.file.url }}" alt="{{ item.title }}">{% elif first and first.media_type == 'VIDEO' %}<video src="{{ first.file.url }}" muted></video>{% else %}<div class="empty-preview">{{ item.text|truncatechars:80|default:'暂无预览' }}</div>{% endif %}{% endwith %}
+    </div>
+    <div class="content-card-body"><h3>{{ item.title }}</h3><p>{{ item.created_at|date:'m-d H:i' }} · {{ item.files.count }} 个文件</p>
+        <div class="action-grid">
+            {% if item.status == 'UNPUBLISHING' %}<button class="btn btn-light" type="button" disabled>处理中</button>{% elif item.status == 'PUBLISHED' or item.status == 'PARTIAL' %}<form method="post" action="{% url 'user-content-unpublish' item.pk %}" data-confirm="确定下架并删除可删除的频道消息吗？">{% csrf_token %}<input type="hidden" name="idempotency_key" value="{{ page_nonce }}:{{ item.pk }}:delete"><button class="btn btn-danger" type="submit">↓ 下架</button></form>{% else %}<form method="post" action="{% url 'user-content-publish' item.pk %}" data-confirm="确定将内容加入上架队列吗？">{% csrf_token %}<input type="hidden" name="idempotency_key" value="{{ page_nonce }}:{{ item.pk }}:send"><button class="btn btn-success" type="submit">↑ 上架</button></form>{% endif %}
+            <a class="btn btn-primary" href="{% url 'user-content-view' item.pk %}">◉ 查看</a>
+            <a class="btn btn-dark" href="{% url 'user-content-edit' item.pk %}">✎ 编辑</a>
+            <form method="post" action="{% url 'user-content-delete' item.pk %}" data-confirm="确定归档该内容吗？">{% csrf_token %}<button class="btn btn-danger-light" type="submit">♙ 删除</button></form>
+            <a class="btn btn-success-light action-full" href="{% url 'user-content-logs' item.pk %}">☷ 发送记录</a>
+        </div>
+    </div>
+</article>{% empty %}<div class="empty panel">暂无内容，点击“上传新内容”开始。</div>{% endfor %}
+</section>
+{% if page_obj.paginator.num_pages > 1 %}<nav class="pagination"><span>第 {{ page_obj.number }} / {{ page_obj.paginator.num_pages }} 页</span>{% if page_obj.has_previous %}<a class="btn btn-light" href="?status={{ status_filter }}&q={{ q|urlencode }}&page={{ page_obj.previous_page_number }}">上一页</a>{% endif %}{% if page_obj.has_next %}<a class="btn btn-light" href="?status={{ status_filter }}&q={{ q|urlencode }}&page={{ page_obj.next_page_number }}">下一页</a>{% endif %}</nav>{% endif %}
+{% endblock %}
