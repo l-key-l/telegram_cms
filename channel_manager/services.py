@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import mimetypes
 import uuid
 from io import BytesIO
+from pathlib import Path
 
 from django.core.files.base import ContentFile as DjangoContentFile
 from django.db import transaction
@@ -25,6 +27,11 @@ from .worker_signal import notify_operation_worker
 
 
 _S2T_CONVERTER = OpenCC("s2t")
+TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+TELEGRAM_PHOTO_TARGET_BYTES = 9 * 1024 * 1024
+TELEGRAM_PHOTO_MAX_SIDE_SUM = 10000
+TELEGRAM_PHOTO_SAFE_SIDE_SUM = 9800
+TELEGRAM_PHOTO_MAX_RATIO = 20
 
 
 def render_content_text(content: Content) -> str:
@@ -74,26 +81,113 @@ def attach_files(content: Content, uploaded_files, *, group_no: int, start_index
             mime=getattr(uploaded, "content_type", "") or mimetypes.guess_type(uploaded.name)[0] or "",
             size=uploaded.size,
         )
-        if content.anti_scan_enabled and item.media_type == ContentFile.MediaType.PHOTO:
-            _create_processed_image(item)
+        if item.media_type == ContentFile.MediaType.PHOTO:
+            ensure_telegram_safe_photo(item, anti_scan_enabled=content.anti_scan_enabled)
 
 
 def _create_processed_image(item: ContentFile):
-    """重编码、移除元数据并做不可见级像素扰动；失败时安全回退原图。"""
+    ensure_telegram_safe_photo(item, anti_scan_enabled=True, force=True)
+
+
+def _image_to_rgb(source: Image.Image) -> Image.Image:
+    image = ImageOps.exif_transpose(source)
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        alpha = image.getchannel("A") if image.mode in {"RGBA", "LA"} else None
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        background.paste(image.convert("RGBA"), mask=alpha or image.convert("RGBA").getchannel("A"))
+        return background
+    return image.convert("RGB")
+
+
+def _photo_needs_normalization(width: int, height: int, size: int = 0) -> bool:
+    if width <= 0 or height <= 0:
+        return True
+    ratio = max(width, height) / max(1, min(width, height))
+    return width + height > TELEGRAM_PHOTO_MAX_SIDE_SUM or ratio > TELEGRAM_PHOTO_MAX_RATIO or size > TELEGRAM_PHOTO_MAX_BYTES
+
+
+def _is_telegram_safe_photo(path: str) -> bool:
+    try:
+        with Image.open(path) as source:
+            width, height = ImageOps.exif_transpose(source).size
+        return not _photo_needs_normalization(width, height, Path(path).stat().st_size)
+    except (OSError, ValueError):
+        return False
+
+
+def _build_telegram_safe_photo(source: Image.Image, *, anti_scan_enabled: bool) -> Image.Image:
+    image = _image_to_rgb(source)
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        raise ValueError("图片尺寸为空")
+
+    ratio = max(width, height) / max(1, min(width, height))
+    if ratio > TELEGRAM_PHOTO_MAX_RATIO:
+        if width >= height:
+            target_height = max(height, math.ceil(width / TELEGRAM_PHOTO_MAX_RATIO))
+            canvas = Image.new("RGB", (width, target_height), (255, 255, 255))
+            canvas.paste(image, (0, (target_height - height) // 2))
+        else:
+            target_width = max(width, math.ceil(height / TELEGRAM_PHOTO_MAX_RATIO))
+            canvas = Image.new("RGB", (target_width, height), (255, 255, 255))
+            canvas.paste(image, ((target_width - width) // 2, 0))
+        image = canvas
+        width, height = image.size
+
+    side_sum = width + height
+    if side_sum > TELEGRAM_PHOTO_SAFE_SIDE_SUM:
+        scale = TELEGRAM_PHOTO_SAFE_SIDE_SUM / side_sum
+        image = image.resize((max(1, int(width * scale)), max(1, int(height * scale))), Image.Resampling.LANCZOS)
+
+    if anti_scan_enabled and image.width and image.height:
+        x, y = image.width - 1, image.height - 1
+        red, green, blue = image.getpixel((x, y))
+        image.putpixel((x, y), ((red + 1) % 256, green, blue))
+    return image
+
+
+def _encoded_safe_photo_bytes(image: Image.Image) -> bytes:
+    current = image
+    quality = 92
+    for _ in range(8):
+        output = BytesIO()
+        current.save(output, format="JPEG", quality=quality, optimize=True)
+        data = output.getvalue()
+        if len(data) <= TELEGRAM_PHOTO_TARGET_BYTES:
+            return data
+        if quality > 76:
+            quality -= 8
+            continue
+        width, height = current.size
+        scale = max(0.55, min(0.92, math.sqrt(TELEGRAM_PHOTO_TARGET_BYTES / len(data)) * 0.96))
+        current = current.resize((max(1, int(width * scale)), max(1, int(height * scale))), Image.Resampling.LANCZOS)
+    return data
+
+
+def ensure_telegram_safe_photo(item: ContentFile, *, anti_scan_enabled: bool | None = None, force: bool = False) -> None:
+    if item.media_type != ContentFile.MediaType.PHOTO:
+        return
+    if anti_scan_enabled is None:
+        anti_scan_enabled = bool(getattr(item.content, "anti_scan_enabled", False))
+    if item.processed_file and not force and _is_telegram_safe_photo(item.processed_file.path):
+        return
+    if not force and not anti_scan_enabled and _is_telegram_safe_photo(item.file.path):
+        return
     try:
         with Image.open(item.file.path) as source:
-            if (source.format or "").upper() not in {"JPEG", "PNG", "WEBP"}:
-                return
-            image = ImageOps.exif_transpose(source).convert("RGB")
-            if image.width and image.height:
-                x, y = image.width - 1, image.height - 1
-                red, green, blue = image.getpixel((x, y))
-                image.putpixel((x, y), ((red + 1) % 256, green, blue))
-            output = BytesIO()
-            image.save(output, format="JPEG", quality=94, optimize=True)
-            item.processed_file.save("processed.jpg", DjangoContentFile(output.getvalue()), save=True)
-    except (OSError, ValueError):
-        return
+            image = _build_telegram_safe_photo(source, anti_scan_enabled=anti_scan_enabled)
+            data = _encoded_safe_photo_bytes(image)
+            item.processed_file.save("telegram_safe.jpg", DjangoContentFile(data), save=True)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"{item.file.name} 图片预处理失败：{exc}") from exc
+
+
+def telegram_media_source_path(item: ContentFile, *, anti_scan_enabled: bool | None = None) -> str:
+    if item.media_type == ContentFile.MediaType.PHOTO:
+        ensure_telegram_safe_photo(item, anti_scan_enabled=anti_scan_enabled)
+        if item.processed_file:
+            return item.processed_file.path
+    return item.file.path
 
 
 def sync_content_channels(content: Content, channels):

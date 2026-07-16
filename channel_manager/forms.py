@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 
 from django import forms
+from PIL import Image, UnidentifiedImageError
 
 from accounts.models import User
 
@@ -245,6 +246,8 @@ class ContentForm(forms.ModelForm):
             content_type = (getattr(item, "content_type", "") or "").lower()
             if not (content_type.startswith("image/") or content_type.startswith("video/")):
                 raise forms.ValidationError(f"{item.name} 不是支持的图片或视频文件。")
+            if content_type.startswith("image/"):
+                self._validate_image_upload(item)
 
         delete_ids = self._parse_id_list(cleaned.get("delete_file_ids"), "待删除文件")
         order_ids = self._parse_id_list(cleaned.get("file_order"), "媒体顺序")
@@ -287,6 +290,23 @@ class ContentForm(forms.ModelForm):
         except ValueError as exc:
             raise forms.ValidationError(f"{label}格式错误。") from exc
         return list(dict.fromkeys(result))
+
+    @staticmethod
+    def _validate_image_upload(item) -> None:
+        try:
+            position = item.tell()
+        except (AttributeError, OSError):
+            position = None
+        try:
+            with Image.open(item) as image:
+                image.verify()
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise forms.ValidationError(f"{item.name} 图片文件读取失败，请换成 JPG、PNG 或 WebP。") from exc
+        finally:
+            try:
+                item.seek(position or 0)
+            except (AttributeError, OSError):
+                pass
 
 
 class TelegramAdminIdsForm(forms.Form):

@@ -61,6 +61,13 @@
 - 两个页面都提供“中止”按钮：清空内容的 `publish_at/cycle_days/cycle_time/next_run_at`，并取消仍在排队或待确认的 Scheduler 自动任务。
 - 中止动作写入 `scheduled_task.stop` 审计，记录中止前后的时间配置和被取消的排队任务数量。
 
+### 0.5 2026-07-16 Telegram 图片尺寸预处理
+
+- 上传图片先通过 PIL 做可读性校验，损坏图片在表单阶段提示更换文件。
+- 发送前对图片做 Telegram 安全副本处理：长宽比控制在 `20:1` 内，宽高和控制在 `10000` 内，输出 JPEG 目标大小低于 `10MB`。
+- 极端长图/宽图自动补白后再压缩，避免 Telegram 返回 `PHOTO_INVALID_DIMENSIONS` 导致整批发送失败。
+- `processed_file` 作为实际发送文件优先使用；普通图片保留原文件，只有防扫图或尺寸/大小超限时生成安全副本。
+
 ## 1. 结论先行
 
 建议做一个 **Django 单体应用并全新开发**，不要拆微服务，也不要在 MVP 引入 MongoDB、Redis、Kafka、Go、Java 或 PHP。

@@ -30,11 +30,18 @@ from .models import (
 )
 from .forms import ExternalMessageActionForm
 from .security import decrypt_secret, encrypt_secret
-from .services import attach_files, enqueue_content_operation, enqueue_due_content_operations, render_content_text
+from .services import attach_files, enqueue_content_operation, enqueue_due_content_operations, render_content_text, telegram_media_source_path
 from .webhook_views import _handle_command
 from .operation_processor import _send_to_telegram, process_operation, resolve_bindings
 from .services import enqueue_operation
 from .telegram_api import _parse_channel_reference, resolve_channel_reference
+
+
+def image_upload(name: str = "photo.jpg", size: tuple[int, int] = (8, 8), image_format: str = "JPEG") -> SimpleUploadedFile:
+    image_buffer = BytesIO()
+    Image.new("RGB", size, color=(10, 20, 30)).save(image_buffer, format=image_format)
+    content_type = "image/png" if image_format.upper() == "PNG" else "image/jpeg"
+    return SimpleUploadedFile(name, image_buffer.getvalue(), content_type=content_type)
 
 
 class ManagerFoundationTests(TestCase):
@@ -292,7 +299,7 @@ class ManagerFoundationTests(TestCase):
                 "cycle_days": "",
                 "cycle_time": "",
                 "publish_at": "",
-                "files_primary": SimpleUploadedFile("new.jpg", b"fake-image", content_type="image/jpeg"),
+                "files_primary": image_upload("new.jpg"),
                 "files_secondary": SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4"),
             },
         )
@@ -310,7 +317,7 @@ class ManagerFoundationTests(TestCase):
             updated_by=self.sub1,
         )
         content.channels.add(self.channel)
-        attach_files(content, [SimpleUploadedFile("first.jpg", b"image", content_type="image/jpeg")], group_no=1)
+        attach_files(content, [image_upload("first.jpg")], group_no=1)
         attach_files(content, [SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4")], group_no=2)
         first = content.files.get(group_no=1)
         second = content.files.get(group_no=2)
@@ -564,11 +571,25 @@ class ManagerFoundationTests(TestCase):
             created_by=self.sub1,
             updated_by=self.sub1,
         )
-        image_buffer = BytesIO()
-        Image.new("RGB", (8, 8), color=(10, 20, 30)).save(image_buffer, format="JPEG")
-        upload = SimpleUploadedFile("photo.jpg", image_buffer.getvalue(), content_type="image/jpeg")
-        attach_files(content, [upload], group_no=1)
+        attach_files(content, [image_upload("photo.jpg")], group_no=1)
         item = ContentFile.objects.get(content=content)
+        self.assertTrue(bool(item.processed_file))
+
+    def test_extreme_photo_dimensions_are_normalized_for_telegram(self):
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="wide-photo",
+            title="wide-photo",
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        attach_files(content, [image_upload("wide.png", size=(5000, 100), image_format="PNG")], group_no=1)
+        item = ContentFile.objects.get(content=content)
+        source_path = telegram_media_source_path(item, anti_scan_enabled=False)
+        with Image.open(source_path) as image:
+            width, height = image.size
+        self.assertLessEqual(width + height, 10000)
+        self.assertLessEqual(max(width, height) / min(width, height), 20)
         self.assertTrue(bool(item.processed_file))
 
     def test_worker_replaces_compatible_media_in_place(self):
@@ -592,7 +613,7 @@ class ManagerFoundationTests(TestCase):
             updated_by=self.sub1,
         )
         content.channels.add(self.channel)
-        attach_files(content, [SimpleUploadedFile("new.jpg", b"image", content_type="image/jpeg")], group_no=1)
+        attach_files(content, [image_upload("new.jpg")], group_no=1)
         delivery = Delivery.objects.create(
             content=content,
             channel=self.channel,
@@ -640,7 +661,7 @@ class ManagerFoundationTests(TestCase):
             can_delete_messages=True,
         )
         content = Content.objects.create(owner_user=self.sub1, code="atomic", title="atomic", text="caption")
-        attach_files(content, [SimpleUploadedFile("first.jpg", b"image", content_type="image/jpeg")], group_no=1)
+        attach_files(content, [image_upload("first.jpg")], group_no=1)
         attach_files(content, [SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4")], group_no=2)
 
         class FakeBot:

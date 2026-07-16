@@ -21,7 +21,7 @@ from .models import (
     UserChannelAccess,
 )
 from .security import decrypt_secret
-from .services import render_content_text
+from .services import render_content_text, telegram_media_source_path
 from .telegram_client import create_bot
 
 
@@ -96,7 +96,7 @@ async def _send_to_telegram(binding: BotChannelBinding, content: Content, files:
                 if len(group) == 1:
                     item = group[0]
                     caption = rendered_text[:1024] if group_no == 1 else None
-                    source_path = item.processed_file.path if content.anti_scan_enabled and item.processed_file else item.file.path
+                    source_path = telegram_media_source_path(item, anti_scan_enabled=content.anti_scan_enabled)
                     file_input = FSInputFile(source_path)
                     if item.media_type == ContentFile.MediaType.PHOTO:
                         message = await bot.send_photo(binding.channel.telegram_chat_id, file_input, caption=caption)
@@ -112,7 +112,7 @@ async def _send_to_telegram(binding: BotChannelBinding, content: Content, files:
                     media = []
                     for index, item in enumerate(group):
                         caption = rendered_text[:1024] if group_no == 1 and index == 0 else None
-                        source_path = item.processed_file.path if content.anti_scan_enabled and item.processed_file else item.file.path
+                        source_path = telegram_media_source_path(item, anti_scan_enabled=content.anti_scan_enabled)
                         source = FSInputFile(source_path)
                         media.append(InputMediaPhoto(media=source, caption=caption) if item.media_type == ContentFile.MediaType.PHOTO else InputMediaVideo(media=source, caption=caption))
                     messages = await bot.send_media_group(binding.channel.telegram_chat_id, media=media)
@@ -237,7 +237,7 @@ async def _edit_delivery_media(binding: BotChannelBinding, channel_id: int, edit
     results = []
     async with create_bot(token) as bot:
         for message_id, item, include_caption in edits:
-            source_path = item.processed_file.path if item.content.anti_scan_enabled and item.processed_file else item.file.path
+            source_path = telegram_media_source_path(item, anti_scan_enabled=item.content.anti_scan_enabled)
             source = FSInputFile(source_path)
             caption = text[:1024] if include_caption else None
             if item.media_type == ContentFile.MediaType.PHOTO:
