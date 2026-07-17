@@ -107,6 +107,15 @@ class ManagerFoundationTests(TestCase):
         self.assertContains(response, 'type="checkbox"')
         self.assertNotContains(response, '<select name="channels"')
 
+    def test_upload_media_inputs_append_and_have_one_click_clear(self):
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-content-upload"))
+        self.assertContains(response, 'data-append-files="true"', count=2)
+        self.assertContains(response, 'data-max-files="10"', count=2)
+        self.assertContains(response, 'data-clear-file-input="id_files_primary"')
+        self.assertContains(response, 'data-clear-file-input="id_files_secondary"')
+        self.assertContains(response, "一键清空本组媒体", count=2)
+
     def test_channel_supports_multiple_bots_with_distinct_priority(self):
         bot1 = TelegramBot.objects.create(display_name="A", token_ciphertext="encrypted-a", created_by=self.master)
         bot2 = TelegramBot.objects.create(display_name="B", token_ciphertext="encrypted-b", created_by=self.master)

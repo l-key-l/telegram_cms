@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ product_name }}{% endblock %}</title>
     <link rel="icon" href="{% static 'img/favicon.svg' %}" type="image/svg+xml">
-    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260715-2">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}?v=20260717-1">
 </head>
 <body>
 <main class="site-shell {% block shell_class %}{% endblock %}">
@@ -45,7 +45,7 @@
 
     {% block content %}{% endblock %}
 </main>
-<script src="{% static 'js/app.js' %}?v=20260714-3"></script>
+<script src="{% static 'js/app.js' %}?v=20260717-1"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

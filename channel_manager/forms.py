@@ -200,12 +200,16 @@ class ContentForm(forms.ModelForm):
     files_primary = MultipleFileField(
         label="第一次发送：图片/视频",
         required=False,
-        widget=MultipleFileInput(attrs={"accept": "image/*,video/*"}),
+        widget=MultipleFileInput(
+            attrs={"accept": "image/*,video/*", "data-append-files": "true", "data-max-files": "10"}
+        ),
     )
     files_secondary = MultipleFileField(
         label="第二次发送：媒体文件（必填）",
         required=False,
-        widget=MultipleFileInput(attrs={"accept": "image/*,video/*"}),
+        widget=MultipleFileInput(
+            attrs={"accept": "image/*,video/*", "data-append-files": "true", "data-max-files": "10"}
+        ),
     )
     delete_file_ids = forms.CharField(required=False, widget=forms.HiddenInput())
     file_order = forms.CharField(required=False, widget=forms.HiddenInput())

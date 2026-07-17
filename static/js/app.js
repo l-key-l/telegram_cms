@@ -18,14 +18,38 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-file-preview]').forEach((container) => {
         const input = document.getElementById(container.dataset.filePreview);
         if (!input) return;
-        input.addEventListener('change', () => {
+
+        const appendMode = input.dataset.appendFiles === 'true';
+        const supportsAppend = appendMode && typeof DataTransfer !== 'undefined';
+        const maxFiles = Number.parseInt(input.dataset.maxFiles || '10', 10);
+        const status = document.querySelector(`[data-file-selection-status="${input.id}"]`);
+        const clearButton = document.querySelector(`[data-clear-file-input="${input.id}"]`);
+        let selectedFiles = [...input.files];
+        let previewUrls = [];
+
+        const syncInputFiles = () => {
+            if (!supportsAppend) return;
+            const transfer = new DataTransfer();
+            selectedFiles.forEach((file) => transfer.items.add(file));
+            input.files = transfer.files;
+        };
+
+        const clearPreviewUrls = () => {
+            previewUrls.forEach((url) => URL.revokeObjectURL(url));
+            previewUrls = [];
+        };
+
+        const renderFiles = (limitReached = false) => {
+            clearPreviewUrls();
             container.innerHTML = '';
-            [...input.files].forEach((file, index) => {
+            selectedFiles.forEach((file, index) => {
                 const row = document.createElement('div');
                 row.className = 'file-preview-item';
                 const preview = document.createElement(file.type.startsWith('video/') ? 'video' : 'img');
                 if (file.type.startsWith('image/') || file.type.startsWith('video/')) {
-                    preview.src = URL.createObjectURL(file);
+                    const previewUrl = URL.createObjectURL(file);
+                    previewUrls.push(previewUrl);
+                    preview.src = previewUrl;
                     if (preview.tagName === 'VIDEO') preview.muted = true;
                     row.appendChild(preview);
                 } else {
@@ -38,7 +62,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 row.appendChild(label);
                 container.appendChild(row);
             });
+            if (status) {
+                status.textContent = limitReached
+                    ? `每组最多 ${maxFiles} 个，已保留前 ${maxFiles} 个媒体`
+                    : `已选择 ${selectedFiles.length}/${maxFiles} 个媒体`;
+                status.classList.toggle('selection-limit-reached', limitReached);
+            }
+            if (clearButton) clearButton.disabled = selectedFiles.length === 0;
+        };
+
+        input.addEventListener('change', () => {
+            const newlyPicked = [...input.files];
+            const mergedFiles = supportsAppend ? [...selectedFiles, ...newlyPicked] : newlyPicked;
+            const limitReached = mergedFiles.length > maxFiles;
+            selectedFiles = mergedFiles.slice(0, maxFiles);
+            syncInputFiles();
+            renderFiles(limitReached);
         });
+
+        if (clearButton) {
+            clearButton.addEventListener('click', () => {
+                selectedFiles = [];
+                input.value = '';
+                syncInputFiles();
+                renderFiles();
+            });
+        }
+
+        input.form?.addEventListener('reset', () => {
+            window.setTimeout(() => {
+                selectedFiles = [];
+                renderFiles();
+            }, 0);
+        });
+        renderFiles();
     });
 
     document.querySelectorAll('[data-select-all]').forEach((selectAll) => {
