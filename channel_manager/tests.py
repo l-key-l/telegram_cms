@@ -107,6 +107,40 @@ class ManagerFoundationTests(TestCase):
         self.assertContains(response, 'type="checkbox"')
         self.assertNotContains(response, '<select name="channels"')
 
+    def test_master_channel_assignment_uses_checkboxes_and_accepts_multiple_channels(self):
+        second_channel = TelegramChannel.objects.create(
+            title="第二频道", telegram_chat_id=-1001234567891, created_by=self.master
+        )
+        self.client.force_login(self.master)
+        response = self.client.get(reverse("master-subaccount-detail", args=[self.sub1.pk]))
+        self.assertContains(response, 'class="channel-picker"')
+        self.assertContains(response, 'type="checkbox"', count=2)
+        self.assertNotContains(response, '<select name="channels"')
+
+        response = self.client.post(
+            reverse("master-subaccount-detail", args=[self.sub1.pk]),
+            {"action": "channels", "channels": [self.channel.pk, second_channel.pk]},
+        )
+        self.assertRedirects(
+            response, reverse("master-subaccount-detail", args=[self.sub1.pk]), fetch_redirect_response=False
+        )
+        self.assertEqual(
+            set(self.sub1.channel_accesses.values_list("channel_id", flat=True)),
+            {self.channel.pk, second_channel.pk},
+        )
+
+    def test_subaccount_profile_lists_only_its_assigned_channels(self):
+        other_channel = TelegramChannel.objects.create(
+            title="乙账号频道", telegram_chat_id=-1001234567892, username="sub2_only", created_by=self.master
+        )
+        UserChannelAccess.objects.create(user=self.sub2, channel=other_channel)
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-profile"))
+        self.assertContains(response, "我的可用频道")
+        self.assertContains(response, self.channel.title)
+        self.assertContains(response, str(self.channel.telegram_chat_id))
+        self.assertNotContains(response, other_channel.title)
+
     def test_upload_media_inputs_append_and_have_one_click_clear(self):
         self.client.force_login(self.sub1)
         response = self.client.get(reverse("user-content-upload"))

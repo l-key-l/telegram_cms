@@ -210,6 +210,14 @@ td small { display: block; color: var(--muted); }
 .mini-card { border: 1px solid var(--line); background: #f9fbfd; border-radius: 9px; padding: 14px; }
 .mini-card p { margin: 6px 0; }
 .card-top { display: flex; justify-content: space-between; gap: 10px; }
+.profile-channel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.profile-channel-card { display: grid; gap: 8px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; background: #f9fbfd; min-width: 0; }
+.profile-channel-card code { overflow-wrap: anywhere; }
+.channel-username { color: var(--muted); overflow-wrap: anywhere; }
+.channel-permission-list { display: flex; gap: 6px; flex-wrap: wrap; }
+.channel-permission-list span { padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.permission-enabled { color: #228043; background: #e9f8ee; }
+.permission-disabled { color: #8a6470; background: #f2f3f5; text-decoration: line-through; }
 
 .media-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .media-tile { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #f6f8fb; }

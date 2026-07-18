@@ -394,7 +394,14 @@ def profile(request):
     return render(
         request,
         "user/profile.html",
-        {"profile_form": profile_form, "admin_form": admin_form, "links": request.user.telegram_links.select_related("bot")},
+        {
+            "profile_form": profile_form,
+            "admin_form": admin_form,
+            "links": request.user.telegram_links.select_related("bot"),
+            "channel_accesses": request.user.channel_accesses.select_related("channel").order_by(
+                "channel__title", "channel_id"
+            ),
+        },
     )
 
 

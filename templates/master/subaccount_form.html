@@ -2,5 +2,5 @@
 {% block title %}创建子账号 - {{ product_name }}{% endblock %}
 {% block page_header %}<header class="page-title"><h1>创建子账号</h1><p>子账号创建后进入目标站风格的内容前台</p></header>{% endblock %}
 {% block content %}
-<section class="panel form-panel"><form method="post" class="styled-form">{% csrf_token %}<h2>账号信息</h2>{{ form.as_p }}<h2>频道分配</h2>{{ channel_form.as_p }}<div class="form-actions"><a class="btn btn-light" href="{% url 'master-subaccounts' %}">返回</a><button class="btn btn-success" type="submit">创建子账号</button></div></form></section>
+<section class="panel form-panel"><form method="post" class="styled-form">{% csrf_token %}<h2>账号信息</h2>{{ form.as_p }}<h2>频道分配</h2><div class="channel-picker">{{ channel_form.channels.label_tag }}<span class="hint">直接勾选一个或多个频道，无需使用 Shift 或 Ctrl。</span>{{ channel_form.channels }}{{ channel_form.channels.errors }}</div><div class="form-actions"><a class="btn btn-light" href="{% url 'master-subaccounts' %}">返回</a><button class="btn btn-success" type="submit">创建子账号</button></div></form></section>
 {% endblock %}

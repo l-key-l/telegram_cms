@@ -339,7 +339,12 @@ class TelegramAdminIdsForm(forms.Form):
 
 
 class SubaccountChannelAccessForm(forms.Form):
-    channels = forms.ModelMultipleChoiceField(label="允许使用的频道", queryset=TelegramChannel.objects.all(), required=False)
+    channels = forms.ModelMultipleChoiceField(
+        label="允许使用的频道",
+        queryset=TelegramChannel.objects.all(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple(attrs={"class": "channel-check-input"}),
+    )
 
     def save(self, user: User):
         selected = self.cleaned_data["channels"]

@@ -4,7 +4,7 @@
 {% block content %}
 <section class="info-card"><div><b>用户名：</b>{{ subaccount.username }}</div><div><b>状态：</b>{{ subaccount.is_active|yesno:'正常,已停用' }}</div><div><b>注册时间：</b>{{ subaccount.date_joined|date:'Y-m-d H:i:s' }}</div></section>
 <div class="two-column">
-<section class="panel"><h2>频道权限</h2><form method="post" class="styled-form">{% csrf_token %}<input type="hidden" name="action" value="channels">{{ access_form.as_p }}<button class="btn btn-primary" type="submit">保存频道分配</button></form></section>
+<section class="panel"><h2>频道权限</h2><form method="post" class="styled-form">{% csrf_token %}<input type="hidden" name="action" value="channels"><div class="channel-picker">{{ access_form.channels.label_tag }}<span class="hint">勾选后保存；取消勾选会撤销该子账号的频道访问权。</span>{{ access_form.channels }}{{ access_form.channels.errors }}</div><button class="btn btn-primary" type="submit">保存频道分配</button></form></section>
 <section class="panel"><h2>账号控制</h2><form method="post" action="{% url 'master-subaccount-toggle' subaccount.pk %}">{% csrf_token %}<button class="btn {% if subaccount.is_active %}btn-danger{% else %}btn-success{% endif %}" type="submit">{% if subaccount.is_active %}停用账号{% else %}恢复账号{% endif %}</button></form><hr><form method="post" action="{% url 'master-subaccount-password' subaccount.pk %}" class="styled-form">{% csrf_token %}{{ password_form.as_p }}<button class="btn btn-primary" type="submit">重置密码</button></form></section>
 </div>
 {% endblock %}
