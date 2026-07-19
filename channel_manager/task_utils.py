@@ -24,6 +24,143 @@ def scheduled_content_q() -> Q:
     )
 
 
+def _schedule_snapshot(content: Content) -> dict:
+    return {
+        "publish_at": content.publish_at.isoformat() if content.publish_at else None,
+        "cycle_days": content.cycle_days,
+        "cycle_time": content.cycle_time.isoformat() if content.cycle_time else None,
+        "next_run_at": content.next_run_at.isoformat() if content.next_run_at else None,
+    }
+
+
+def _has_schedule(content: Content) -> bool:
+    return bool(content.publish_at or content.cycle_days or content.cycle_time or content.next_run_at)
+
+
+def audit_scheduled_task_consistency(*, fix: bool = False) -> dict:
+    """扫描历史自动任务；fix=True 时只修复可确定的矛盾记录。"""
+    report = {
+        "content_issues": [],
+        "operation_issues": [],
+        "running_reviews": [],
+        "fixed_contents": 0,
+        "cancelled_operations": 0,
+    }
+    scheduled_contents = Content.objects.filter(scheduled_content_q()).select_related("owner_user")
+    for content in scheduled_contents.iterator():
+        latest_delete = (
+            Operation.objects.filter(
+                owner_user=content.owner_user,
+                target_type="content",
+                target_id=str(content.pk),
+                action=Operation.Action.DELETE,
+            )
+            .only("created_at", "updated_at", "finished_at")
+            .order_by("-created_at")
+            .first()
+        )
+        latest_delete_at = None
+        if latest_delete:
+            latest_delete_at = latest_delete.finished_at or latest_delete.updated_at or latest_delete.created_at
+
+        reason = ""
+        if content.deleted_at or content.status == Content.Status.ARCHIVED:
+            reason = "内容已归档或删除"
+        elif content.status == Content.Status.UNPUBLISHING:
+            reason = "内容正在下架"
+        elif (
+            content.status in {Content.Status.UNPUBLISHED, Content.Status.PARTIAL}
+            and latest_delete_at
+            and content.updated_at <= latest_delete_at
+        ):
+            reason = "最近一次内容变更来自下架任务"
+
+        if not reason:
+            continue
+        report["content_issues"].append(
+            {"content_id": content.pk, "title": content.title, "reason": reason, "schedule": _schedule_snapshot(content)}
+        )
+        if fix:
+            cancelled_count = stop_scheduled_task(
+                request=None,
+                actor="scheduled-task-audit",
+                content=content,
+                reason="CONSISTENCY_REPAIR",
+                source=Operation.Source.SYSTEM,
+                actor_type=Operation.ActorType.SYSTEM,
+            )
+            report["fixed_contents"] += 1
+            report["cancelled_operations"] += cancelled_count
+
+    active_operations = Operation.objects.filter(
+        source=Operation.Source.SCHEDULER,
+        target_type="content",
+        action__in=TASK_OPERATION_ACTIONS,
+        state__in=(*TASK_QUEUE_STATES, Operation.State.RUNNING),
+    ).select_related("owner_user")
+    for operation in active_operations.iterator():
+        content = None
+        if operation.target_id.isdigit():
+            content = Content.objects.filter(pk=int(operation.target_id), owner_user=operation.owner_user).first()
+
+        reason = ""
+        if not content:
+            reason = "任务目标内容不存在"
+        elif content.deleted_at or content.status == Content.Status.ARCHIVED:
+            reason = "任务目标已经归档或删除"
+        elif content.status == Content.Status.UNPUBLISHING:
+            reason = "任务目标正在下架"
+        elif not _has_schedule(content):
+            reason = "任务目标已清空定时和循环配置"
+        elif Operation.objects.filter(
+            owner_user=operation.owner_user,
+            target_type="content",
+            target_id=operation.target_id,
+            action=Operation.Action.DELETE,
+            created_at__gt=operation.created_at,
+        ).exists():
+            reason = "自动任务创建后又提交了下架任务"
+
+        if not reason:
+            continue
+        item = {
+            "operation_id": str(operation.pk),
+            "content_id": content.pk if content else operation.target_id,
+            "reason": reason,
+            "state": operation.state,
+        }
+        if operation.state == Operation.State.RUNNING:
+            report["running_reviews"].append(item)
+            continue
+        report["operation_issues"].append(item)
+        if fix:
+            now = timezone.now()
+            updated = Operation.objects.filter(pk=operation.pk, state__in=TASK_QUEUE_STATES).update(
+                state=Operation.State.CANCELLED,
+                finished_at=now,
+                locked_by="",
+                locked_until=None,
+                telegram_error_code="TASK_RECONCILED",
+                telegram_error_text=f"历史任务一致性巡检已取消：{reason}",
+            )
+            if updated:
+                report["cancelled_operations"] += 1
+                audit_event(
+                    request=None,
+                    actor="scheduled-task-audit",
+                    owner_user=operation.owner_user,
+                    action="scheduled_task.reconcile",
+                    object_type="operation",
+                    object_id=str(operation.pk),
+                    before={"state": operation.state},
+                    after={"state": Operation.State.CANCELLED, "reason": reason},
+                    operation=operation,
+                    source=Operation.Source.SYSTEM,
+                    actor_type=Operation.ActorType.SYSTEM,
+                )
+    return report
+
+
 def build_scheduled_task_rows(contents):
     content_list = list(contents)
     content_ids = [str(item.pk) for item in content_list]
@@ -126,12 +263,7 @@ def stop_scheduled_task(
 ) -> int:
     with transaction.atomic():
         locked = Content.objects.select_for_update().get(pk=content.pk)
-        before = {
-            "publish_at": locked.publish_at.isoformat() if locked.publish_at else None,
-            "cycle_days": locked.cycle_days,
-            "cycle_time": locked.cycle_time.isoformat() if locked.cycle_time else None,
-            "next_run_at": locked.next_run_at.isoformat() if locked.next_run_at else None,
-        }
+        before = _schedule_snapshot(locked)
         locked.publish_at = None
         locked.cycle_days = None
         locked.cycle_time = None
@@ -152,13 +284,19 @@ def stop_scheduled_task(
             locked_by="",
             locked_until=None,
             telegram_error_code="TASK_STOPPED",
-            telegram_error_text="内容下架，自动任务已中止" if reason == "CONTENT_UNPUBLISH" else "任务已由页面中止",
+            telegram_error_text=(
+                "内容下架，自动任务已中止"
+                if reason == "CONTENT_UNPUBLISH"
+                else "历史任务一致性巡检已清理"
+                if reason == "CONSISTENCY_REPAIR"
+                else "任务已由页面中止"
+            ),
         )
         audit_event(
             request=request,
             actor=actor,
             owner_user=locked.owner_user,
-            action="scheduled_task.stop",
+            action="scheduled_task.reconcile" if reason == "CONSISTENCY_REPAIR" else "scheduled_task.stop",
             object_type="content",
             object_id=str(locked.pk),
             before=before,

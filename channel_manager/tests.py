@@ -1,5 +1,6 @@
 from django.db import IntegrityError, transaction
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from asgiref.sync import async_to_sync
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -8,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 from datetime import time, timedelta
 import tempfile
-from io import BytesIO
+from io import BytesIO, StringIO
 from PIL import Image
 
 from accounts.models import User
@@ -393,6 +394,63 @@ class ManagerFoundationTests(TestCase):
         operation.refresh_from_db()
         self.assertEqual(operation.state, Operation.State.CANCELLED)
         self.assertEqual(operation.telegram_error_code, "TASK_STOPPED")
+
+    def test_scheduled_task_audit_command_supports_dry_run_and_fix(self):
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="history-audit",
+            title="历史循环脏数据",
+            status=Content.Status.PARTIAL,
+            cycle_days=3,
+            cycle_time=time(9, 30),
+            next_run_at=timezone.now() + timedelta(days=3),
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        scheduled_operation = Operation.objects.create(
+            owner_user=self.sub1,
+            actor_type=Operation.ActorType.SYSTEM,
+            actor_id="scheduler",
+            source=Operation.Source.SCHEDULER,
+            action=Operation.Action.REPLACE,
+            target_type="content",
+            target_id=str(content.pk),
+            idempotency_key="history-audit-scheduler",
+            state=Operation.State.QUEUED,
+            available_at=timezone.now() + timedelta(days=3),
+        )
+        Operation.objects.create(
+            owner_user=self.sub1,
+            actor_type=Operation.ActorType.WEB_USER,
+            actor_id=str(self.sub1.pk),
+            source=Operation.Source.WEB,
+            action=Operation.Action.DELETE,
+            target_type="content",
+            target_id=str(content.pk),
+            idempotency_key="history-audit-delete",
+            state=Operation.State.PARTIAL,
+            available_at=timezone.now(),
+            finished_at=timezone.now(),
+        )
+
+        dry_output = StringIO()
+        call_command("audit_scheduled_tasks", stdout=dry_output)
+        content.refresh_from_db()
+        scheduled_operation.refresh_from_db()
+        self.assertIn("内容配置异常 1", dry_output.getvalue())
+        self.assertIsNotNone(content.cycle_days)
+        self.assertEqual(scheduled_operation.state, Operation.State.QUEUED)
+
+        fix_output = StringIO()
+        call_command("audit_scheduled_tasks", "--fix", stdout=fix_output)
+        content.refresh_from_db()
+        scheduled_operation.refresh_from_db()
+        self.assertIn("已修复内容 1", fix_output.getvalue())
+        self.assertIsNone(content.cycle_days)
+        self.assertIsNone(content.cycle_time)
+        self.assertIsNone(content.next_run_at)
+        self.assertEqual(scheduled_operation.state, Operation.State.CANCELLED)
+        self.assertTrue(AuditEvent.objects.filter(action="scheduled_task.reconcile").exists())
 
     def test_editing_published_media_enqueues_replace(self):
         content = Content.objects.create(
