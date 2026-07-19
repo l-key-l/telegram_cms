@@ -143,6 +143,14 @@ def contents_bulk(request):
         if content.status not in allowed_statuses or not _has_content_permission(request.user, content, permission):
             skipped += 1
             continue
+        cancelled_scheduler_count = 0
+        if operation_action == Operation.Action.DELETE:
+            cancelled_scheduler_count = stop_scheduled_task(
+                request=request,
+                actor=request.user,
+                content=content,
+                reason="CONTENT_UNPUBLISH",
+            )
         operation, created = enqueue_content_operation(
             content=content,
             action=operation_action,
@@ -161,7 +169,12 @@ def contents_bulk(request):
                 object_type="operation",
                 object_id=str(operation.pk),
                 outcome="ACCEPTED",
-                after={"bulk": True, "action": operation_action, "content_id": content.pk},
+                after={
+                    "bulk": True,
+                    "action": operation_action,
+                    "content_id": content.pk,
+                    "cancelled_scheduler_operations": cancelled_scheduler_count,
+                },
                 operation=operation,
             )
             accepted += 1
@@ -305,6 +318,14 @@ def _queue_action(request, content: Content, action: str, new_status: str | None
     ).exists():
         messages.info(request, "相同操作已经在队列中或正在执行。")
         return redirect("user-content-logs", pk=content.pk)
+    cancelled_scheduler_count = 0
+    if action == Operation.Action.DELETE:
+        cancelled_scheduler_count = stop_scheduled_task(
+            request=request,
+            actor=request.user,
+            content=content,
+            reason="CONTENT_UNPUBLISH",
+        )
     operation, created = enqueue_content_operation(
         content=content,
         action=action,
@@ -322,7 +343,11 @@ def _queue_action(request, content: Content, action: str, new_status: str | None
         object_type="operation",
         object_id=str(operation.pk),
         outcome="ACCEPTED",
-        after={"action": action, "content_id": content.pk},
+        after={
+            "action": action,
+            "content_id": content.pk,
+            "cancelled_scheduler_operations": cancelled_scheduler_count,
+        },
         operation=operation,
     )
     messages.success(request, success_message if created else "相同任务已经在队列中，无需重复提交。")
@@ -346,7 +371,13 @@ def content_unpublish(request, pk: int):
     if content.status not in {Content.Status.PUBLISHED, Content.Status.PARTIAL}:
         messages.error(request, "只有已上架或部分下架内容可以继续下架。")
         return redirect("user-content-view", pk=content.pk)
-    return _queue_action(request, content, Operation.Action.DELETE, Content.Status.UNPUBLISHING, "下架任务已加入队列。")
+    return _queue_action(
+        request,
+        content,
+        Operation.Action.DELETE,
+        Content.Status.UNPUBLISHING,
+        "下架任务已加入队列，定时和循环任务已同步中止。",
+    )
 
 
 @sub_required

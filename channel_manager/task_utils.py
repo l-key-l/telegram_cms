@@ -115,7 +115,15 @@ def build_scheduled_task_rows(contents):
     return rows
 
 
-def stop_scheduled_task(*, request, actor, content: Content) -> int:
+def stop_scheduled_task(
+    *,
+    request,
+    actor,
+    content: Content,
+    reason: str = "MANUAL_STOP",
+    source: str = Operation.Source.WEB,
+    actor_type: str = "WEB_USER",
+) -> int:
     with transaction.atomic():
         locked = Content.objects.select_for_update().get(pk=content.pk)
         before = {
@@ -144,7 +152,7 @@ def stop_scheduled_task(*, request, actor, content: Content) -> int:
             locked_by="",
             locked_until=None,
             telegram_error_code="TASK_STOPPED",
-            telegram_error_text="任务已由网页中止",
+            telegram_error_text="内容下架，自动任务已中止" if reason == "CONTENT_UNPUBLISH" else "任务已由页面中止",
         )
         audit_event(
             request=request,
@@ -160,6 +168,9 @@ def stop_scheduled_task(*, request, actor, content: Content) -> int:
                 "cycle_time": None,
                 "next_run_at": None,
                 "cancelled_operations": cancelled_count,
+                "reason": reason,
             },
+            source=source,
+            actor_type=actor_type,
         )
     return cancelled_count

@@ -266,6 +266,7 @@ def enqueue_due_content_operations(*, limit: int = 20) -> int:
     queued = 0
     for content_id in (
         Content.objects.filter(next_run_at__isnull=False, next_run_at__lte=now, deleted_at__isnull=True)
+        .exclude(status=Content.Status.UNPUBLISHING)
         .order_by("next_run_at")
         .values_list("pk", flat=True)[:limit]
     ):
@@ -275,7 +276,7 @@ def enqueue_due_content_operations(*, limit: int = 20) -> int:
                 next_run_at__isnull=False,
                 next_run_at__lte=now,
                 deleted_at__isnull=True,
-            ).first()
+            ).exclude(status=Content.Status.UNPUBLISHING).first()
             if not content:
                 continue
             due_at = content.next_run_at

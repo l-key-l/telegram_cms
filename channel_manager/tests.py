@@ -322,6 +322,78 @@ class ManagerFoundationTests(TestCase):
         content.refresh_from_db()
         self.assertIsNone(content.deleted_at)
 
+    def test_unpublish_stops_cycle_and_cancels_queued_scheduler_operation(self):
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="stop-on-unpublish",
+            title="下架停止循环",
+            status=Content.Status.PUBLISHED,
+            publish_at=timezone.now() - timedelta(days=2),
+            cycle_days=2,
+            cycle_time=time(14, 26),
+            next_run_at=timezone.now() + timedelta(days=2),
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        content.channels.add(self.channel)
+        scheduled_operation = Operation.objects.create(
+            owner_user=self.sub1,
+            actor_type=Operation.ActorType.SYSTEM,
+            actor_id="scheduler",
+            source=Operation.Source.SCHEDULER,
+            action=Operation.Action.REPLACE,
+            target_type="content",
+            target_id=str(content.pk),
+            request_json={"reason": "SCHEDULED_UPDATE"},
+            idempotency_key="unpublish-cancels-cycle",
+            state=Operation.State.QUEUED,
+            available_at=timezone.now() + timedelta(days=2),
+        )
+
+        self.client.force_login(self.sub1)
+        response = self.client.post(reverse("user-content-unpublish", args=[content.pk]))
+        self.assertRedirects(response, reverse("user-content-logs", args=[content.pk]), fetch_redirect_response=False)
+        content.refresh_from_db()
+        scheduled_operation.refresh_from_db()
+        self.assertEqual(content.status, Content.Status.UNPUBLISHING)
+        self.assertIsNone(content.publish_at)
+        self.assertIsNone(content.cycle_days)
+        self.assertIsNone(content.cycle_time)
+        self.assertIsNone(content.next_run_at)
+        self.assertEqual(scheduled_operation.state, Operation.State.CANCELLED)
+        self.assertTrue(
+            Operation.objects.filter(target_id=str(content.pk), action=Operation.Action.DELETE, state=Operation.State.QUEUED).exists()
+        )
+        task_response = self.client.get(reverse("user-tasks"))
+        self.assertNotContains(task_response, content.title)
+
+    def test_stale_scheduler_operation_is_cancelled_before_sending(self):
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="stale-scheduler",
+            title="已停止自动任务",
+            status=Content.Status.UNPUBLISHED,
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        content.channels.add(self.channel)
+        operation = Operation.objects.create(
+            owner_user=self.sub1,
+            actor_type=Operation.ActorType.SYSTEM,
+            actor_id="scheduler",
+            source=Operation.Source.SCHEDULER,
+            action=Operation.Action.SEND,
+            target_type="content",
+            target_id=str(content.pk),
+            idempotency_key="stale-scheduler-operation",
+            state=Operation.State.QUEUED,
+            available_at=timezone.now(),
+        )
+        process_operation(operation)
+        operation.refresh_from_db()
+        self.assertEqual(operation.state, Operation.State.CANCELLED)
+        self.assertEqual(operation.telegram_error_code, "TASK_STOPPED")
+
     def test_editing_published_media_enqueues_replace(self):
         content = Content.objects.create(
             owner_user=self.sub1,
@@ -471,6 +543,9 @@ class ManagerFoundationTests(TestCase):
             code="6",
             title="confirm",
             status=Content.Status.PUBLISHED,
+            cycle_days=1,
+            cycle_time=time(4, 0),
+            next_run_at=timezone.now() + timedelta(days=1),
             created_by=self.sub1,
             updated_by=self.sub1,
         )
@@ -494,6 +569,10 @@ class ManagerFoundationTests(TestCase):
         )
         self.assertIn("任务已加入队列", second_reply)
         self.assertTrue(Operation.objects.filter(target_id=str(content.pk), action=Operation.Action.DELETE).exists())
+        content.refresh_from_db()
+        self.assertIsNone(content.cycle_days)
+        self.assertIsNone(content.cycle_time)
+        self.assertIsNone(content.next_run_at)
 
     def test_master_channel_edit_enqueues_remote_update(self):
         self.client.force_login(self.master)

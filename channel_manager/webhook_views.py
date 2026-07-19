@@ -25,6 +25,7 @@ from .models import (
 )
 from .security import decrypt_secret
 from .services import enqueue_content_operation
+from .task_utils import stop_scheduled_task
 from .telegram_client import create_bot
 
 
@@ -171,6 +172,15 @@ def _handle_command(*, bot_record, update_id: int, chat_id: int, telegram_user_i
                 pending.status = TelegramPendingAction.Status.CANCELLED
                 pending.save(update_fields=("status", "updated_at"))
                 return "该操作已下线。"
+            if pending.action == Operation.Action.DELETE:
+                stop_scheduled_task(
+                    request=None,
+                    actor=telegram_user_id,
+                    content=pending.content,
+                    reason="CONTENT_UNPUBLISH",
+                    source=Operation.Source.TELEGRAM,
+                    actor_type=Operation.ActorType.TELEGRAM_USER,
+                )
             operation = _enqueue_from_telegram(
                 content=pending.content,
                 action=pending.action,
@@ -195,6 +205,8 @@ def _handle_command(*, bot_record, update_id: int, chat_id: int, telegram_user_i
                 source="TELEGRAM",
                 actor_type="TELEGRAM_USER",
             )
+        if pending.action == Operation.Action.DELETE:
+            return f"已确认，定时和循环任务已中止，下架任务已加入队列：{operation.id}"
         return f"已确认，任务已加入队列：{operation.id}"
 
     if text.startswith("/编辑"):

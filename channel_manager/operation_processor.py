@@ -553,7 +553,18 @@ def process_operation(operation: Operation):
         if operation.target_type == "content":
             content = Content.objects.get(pk=operation.target_id, owner_user=operation.owner_user)
             _assert_operation_permission(operation, content)
-            if operation.action == Operation.Action.SEND:
+            scheduler_is_stopped = operation.source == Operation.Source.SCHEDULER and operation.action in {
+                Operation.Action.SEND,
+                Operation.Action.REPLACE,
+            } and (
+                content.status == Content.Status.UNPUBLISHING
+                or not any((content.publish_at, content.cycle_days, content.cycle_time, content.next_run_at))
+            )
+            if scheduler_is_stopped:
+                operation.state = Operation.State.CANCELLED
+                operation.telegram_error_code = "TASK_STOPPED"
+                operation.telegram_error_text = "定时或循环配置已清空，跳过本次自动执行"
+            elif operation.action == Operation.Action.SEND:
                 _process_send(operation, content)
             elif operation.action == Operation.Action.REPLACE:
                 _process_replace(operation, content)
