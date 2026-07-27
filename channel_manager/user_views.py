@@ -40,7 +40,14 @@ def contents(request):
     query = request.GET.get("q", "").strip()
     items = Content.objects.filter(owner_user=request.user, deleted_at__isnull=True).prefetch_related("files", "channels")
     if status == "unpublished":
-        items = items.filter(status__in=(Content.Status.DRAFT, Content.Status.UNPUBLISHED, Content.Status.ARCHIVED))
+        items = items.filter(
+            status__in=(
+                Content.Status.DRAFT,
+                Content.Status.UNPUBLISHED,
+                Content.Status.UNPUBLISHED_RETAINED,
+                Content.Status.ARCHIVED,
+            )
+        )
     else:
         items = items.filter(status__in=(Content.Status.PUBLISHED, Content.Status.UNPUBLISHING, Content.Status.PARTIAL))
     if query:
@@ -112,14 +119,23 @@ def contents_bulk(request):
             continue
         if action == "publish":
             operation_action = Operation.Action.SEND
-            allowed_statuses = {Content.Status.DRAFT, Content.Status.UNPUBLISHED}
+            allowed_statuses = {
+                Content.Status.DRAFT,
+                Content.Status.UNPUBLISHED,
+                Content.Status.UNPUBLISHED_RETAINED,
+            }
             permission = "can_publish"
         elif action == "unpublish":
             operation_action = Operation.Action.DELETE
             allowed_statuses = {Content.Status.PUBLISHED, Content.Status.PARTIAL}
             permission = "can_delete"
         elif action == "archive":
-            if content.status not in {Content.Status.DRAFT, Content.Status.UNPUBLISHED, Content.Status.ARCHIVED}:
+            if content.status not in {
+                Content.Status.DRAFT,
+                Content.Status.UNPUBLISHED,
+                Content.Status.UNPUBLISHED_RETAINED,
+                Content.Status.ARCHIVED,
+            }:
                 skipped += 1
                 continue
             content.deleted_at = timezone.now()
@@ -358,7 +374,11 @@ def _queue_action(request, content: Content, action: str, new_status: str | None
 @require_POST
 def content_publish(request, pk: int):
     content = _owned_content(request, pk)
-    if content.status not in {Content.Status.DRAFT, Content.Status.UNPUBLISHED}:
+    if content.status not in {
+        Content.Status.DRAFT,
+        Content.Status.UNPUBLISHED,
+        Content.Status.UNPUBLISHED_RETAINED,
+    }:
         messages.error(request, "只有草稿或已下架内容可以上架。")
         return redirect("user-content-view", pk=content.pk)
     return _queue_action(request, content, Operation.Action.SEND, None, "上架任务已加入队列。")

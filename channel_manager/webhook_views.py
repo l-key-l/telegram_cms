@@ -267,7 +267,11 @@ def _handle_command(*, bot_record, update_id: int, chat_id: int, telegram_user_i
             "/下架": Operation.Action.DELETE,
         }
         action = command_to_action[parts[0]]
-        if action == Operation.Action.SEND and content.status not in {Content.Status.DRAFT, Content.Status.UNPUBLISHED}:
+        if action == Operation.Action.SEND and content.status not in {
+            Content.Status.DRAFT,
+            Content.Status.UNPUBLISHED,
+            Content.Status.UNPUBLISHED_RETAINED,
+        }:
             return "只有草稿或已下架内容可以上架。"
         if action == Operation.Action.DELETE and content.status not in {Content.Status.PUBLISHED, Content.Status.PARTIAL}:
             return "该操作要求内容已经上架。"

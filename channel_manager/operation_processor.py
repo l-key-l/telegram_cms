@@ -74,7 +74,20 @@ def _assert_operation_permission(operation: Operation, content: Content):
         raise PermissionError("任务执行前权限复核失败")
 
 
-async def _send_to_telegram(binding: BotChannelBinding, content: Content, files: list[ContentFile]):
+def _prepare_media_paths(content: Content, files: list[ContentFile]) -> dict[int, str]:
+    """在同步 Worker 上完成图片预处理和 ORM 保存，异步 Telegram 调用只读本地路径。"""
+    return {
+        item.pk: telegram_media_source_path(item, anti_scan_enabled=content.anti_scan_enabled)
+        for item in files
+    }
+
+
+async def _send_to_telegram(
+    binding: BotChannelBinding,
+    content: Content,
+    files: list[ContentFile],
+    media_paths: dict[int, str],
+):
     token = decrypt_secret(binding.bot.token_ciphertext)
     results = []
     async with create_bot(token) as bot:
@@ -96,7 +109,7 @@ async def _send_to_telegram(binding: BotChannelBinding, content: Content, files:
                 if len(group) == 1:
                     item = group[0]
                     caption = rendered_text[:1024] if group_no == 1 else None
-                    source_path = telegram_media_source_path(item, anti_scan_enabled=content.anti_scan_enabled)
+                    source_path = media_paths[item.pk]
                     file_input = FSInputFile(source_path)
                     if item.media_type == ContentFile.MediaType.PHOTO:
                         message = await bot.send_photo(binding.channel.telegram_chat_id, file_input, caption=caption)
@@ -112,7 +125,7 @@ async def _send_to_telegram(binding: BotChannelBinding, content: Content, files:
                     media = []
                     for index, item in enumerate(group):
                         caption = rendered_text[:1024] if group_no == 1 and index == 0 else None
-                        source_path = telegram_media_source_path(item, anti_scan_enabled=content.anti_scan_enabled)
+                        source_path = media_paths[item.pk]
                         source = FSInputFile(source_path)
                         media.append(InputMediaPhoto(media=source, caption=caption) if item.media_type == ContentFile.MediaType.PHOTO else InputMediaVideo(media=source, caption=caption))
                     messages = await bot.send_media_group(binding.channel.telegram_chat_id, media=media)
@@ -156,7 +169,7 @@ async def _rollback_sent_messages(binding: BotChannelBinding, results) -> list[s
 
 async def _delete_delivery(binding: BotChannelBinding, channel_id: int, message_items: list[tuple[int, int]]):
     token = decrypt_secret(binding.bot.token_ciphertext)
-    deleted, failed = [], []
+    deleted, retained, failed = [], [], []
     async with create_bot(token) as bot:
         for item_pk, telegram_message_id in message_items:
             try:
@@ -166,11 +179,13 @@ async def _delete_delivery(binding: BotChannelBinding, channel_id: int, message_
                 error = str(exc)
                 if "message to delete not found" in error.lower():
                     deleted.append(item_pk)
+                elif "message can't be deleted" in error.lower():
+                    retained.append((item_pk, error))
                 else:
                     failed.append((item_pk, error))
             except TelegramNetworkError as exc:
                 failed.append((item_pk, f"NETWORK_UNCERTAIN: {exc}"))
-    return deleted, failed
+    return deleted, retained, failed
 
 
 async def _sync_delivery_text(binding: BotChannelBinding, channel_id: int, first: dict | None, text: str):
@@ -232,12 +247,16 @@ async def _operate_external_message(binding: BotChannelBinding, payload: dict):
             await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=payload["text"][:4096])
 
 
-async def _edit_delivery_media(binding: BotChannelBinding, channel_id: int, edits: list[tuple[int, ContentFile, bool]], text: str):
+async def _edit_delivery_media(
+    binding: BotChannelBinding,
+    channel_id: int,
+    edits: list[tuple[int, ContentFile, bool, str]],
+    text: str,
+):
     token = decrypt_secret(binding.bot.token_ciphertext)
     results = []
     async with create_bot(token) as bot:
-        for message_id, item, include_caption in edits:
-            source_path = telegram_media_source_path(item, anti_scan_enabled=item.content.anti_scan_enabled)
+        for message_id, item, include_caption, source_path in edits:
             source = FSInputFile(source_path)
             caption = text[:1024] if include_caption else None
             if item.media_type == ContentFile.MediaType.PHOTO:
@@ -293,14 +312,19 @@ def _record_delivery(operation: Operation, content: Content, channel, binding, r
     return delivery
 
 
-def _send_channel_with_failover(channel, content: Content, files: list[ContentFile]):
+def _send_channel_with_failover(
+    channel,
+    content: Content,
+    files: list[ContentFile],
+    media_paths: dict[int, str],
+):
     errors = []
     for binding in resolve_bindings(channel):
         if not binding.can_delete_messages:
             errors.append(f"{binding.bot.display_name}: 两阶段原子发送要求 Bot 同时具备删除消息权限")
             continue
         try:
-            results = async_to_sync(_send_to_telegram)(binding, content, files)
+            results = async_to_sync(_send_to_telegram)(binding, content, files, media_paths)
             return binding, results
         except (AtomicSendRollbackError, TelegramNetworkError, TelegramRetryAfter):
             # 发送结果不确定或 Telegram 要求等待时绝不切换 Bot，避免重复消息。
@@ -318,10 +342,11 @@ def _process_send(operation: Operation, content: Content):
     if not any(item.group_no == 2 for item in files):
         raise RuntimeError("第二次发送缺少媒体文件，内容不会投递。")
     succeeded, failed = 0, []
+    media_paths = _prepare_media_paths(content, files)
     generation = (content.deliveries.aggregate(value=Max("generation"))["value"] or 0) + 1
     for channel in channels:
         try:
-            binding, results = _send_channel_with_failover(channel, content, files)
+            binding, results = _send_channel_with_failover(channel, content, files, media_paths)
             try:
                 with transaction.atomic():
                     _record_delivery(operation, content, channel, binding, results, generation)
@@ -357,30 +382,32 @@ def _process_send(operation: Operation, content: Content):
 
 
 def _process_delete(operation: Operation, content: Content):
-    deliveries = content.deliveries.filter(status__in=(Delivery.Status.ACTIVE, Delivery.Status.PARTIAL)).select_related("bot_channel_binding__bot", "channel")
+    deliveries = content.deliveries.filter(
+        status__in=(Delivery.Status.ACTIVE, Delivery.Status.PARTIAL)
+    ).select_related("bot_channel_binding__bot", "channel")
     failed = []
+    delete_error_code = ""
     for delivery in deliveries:
-        binding = delivery.bot_channel_binding
-        if not binding:
-            failed.append(f"{delivery.channel.title}: 缺少原始 Bot 绑定")
-            continue
-        message_items = list(
-            delivery.messages.exclude(status=DeliveryMessage.Status.DELETED)
-            .order_by("sort_index")
-            .values_list("pk", "telegram_message_id")
-        )
-        deleted, item_failed = async_to_sync(_delete_delivery)(binding, delivery.channel.telegram_chat_id, message_items)
-        DeliveryMessage.objects.filter(pk__in=deleted).update(status=DeliveryMessage.Status.DELETED, deleted_at=timezone.now())
-        if item_failed:
-            delivery.status = Delivery.Status.PARTIAL
-            failed.extend(f"{delivery.channel.title}/{pk}: {error}" for pk, error in item_failed)
-        else:
-            delivery.status = Delivery.Status.DELETED
-        delivery.save(update_fields=("status", "updated_at"))
-    content.status = Content.Status.PARTIAL if failed else Content.Status.UNPUBLISHED
+        delivery_errors, delivery_error_code = _delete_delivery_record(delivery)
+        failed.extend(delivery_errors)
+        if delivery_error_code == "DELETE_WINDOW_EXPIRED" or not delete_error_code:
+            delete_error_code = delivery_error_code
+
+    retryable_exists = content.deliveries.filter(
+        status__in=(Delivery.Status.ACTIVE, Delivery.Status.PARTIAL)
+    ).exists()
+    retained_exists = content.deliveries.filter(status=Delivery.Status.RETAINED).exists()
+    if retryable_exists:
+        content.status = Content.Status.PARTIAL
+    elif retained_exists:
+        content.status = Content.Status.UNPUBLISHED_RETAINED
+    else:
+        content.status = Content.Status.UNPUBLISHED
     content.save(update_fields=("status", "updated_at"))
     operation.state = Operation.State.PARTIAL if failed else Operation.State.SUCCEEDED
     operation.telegram_error_text = "；".join(failed)
+    if delete_error_code:
+        operation.telegram_error_code = delete_error_code
 
 
 def _process_sync(operation: Operation, content: Content):
@@ -404,20 +431,68 @@ def _process_sync(operation: Operation, content: Content):
     operation.telegram_error_text = "；".join(failed)
 
 
-def _delete_delivery_record(delivery: Delivery) -> list[str]:
+def _delivery_delete_window_expired(delivery: Delivery) -> bool:
+    deadline = delivery.deletable_until
+    if not deadline and delivery.sent_at:
+        deadline = delivery.sent_at + timedelta(hours=48)
+    return bool(deadline and deadline <= timezone.now())
+
+
+def _mark_delivery_retained(delivery: Delivery) -> int:
+    retained_count = delivery.messages.exclude(status=DeliveryMessage.Status.DELETED).update(
+        status=DeliveryMessage.Status.RETAINED
+    )
+    delivery.status = Delivery.Status.RETAINED
+    delivery.save(update_fields=("status", "updated_at"))
+    return retained_count
+
+
+def _delete_delivery_record(delivery: Delivery) -> tuple[list[str], str]:
+    if _delivery_delete_window_expired(delivery):
+        retained_count = _mark_delivery_retained(delivery)
+        return (
+            [
+                f"{delivery.channel.title}: 旧批次已超过 Telegram 48 小时删除窗口，"
+                f"{retained_count} 条消息保留在频道，请手动清理"
+            ],
+            "DELETE_WINDOW_EXPIRED",
+        )
     binding = delivery.bot_channel_binding
     if not binding:
-        return [f"{delivery.channel.title}: 缺少原始 Bot 绑定"]
+        delivery.status = Delivery.Status.PARTIAL
+        delivery.save(update_fields=("status", "updated_at"))
+        return [f"{delivery.channel.title}: 缺少原始 Bot 绑定"], ""
     message_items = list(
-        delivery.messages.exclude(status=DeliveryMessage.Status.DELETED)
+        delivery.messages.exclude(
+            status__in=(DeliveryMessage.Status.DELETED, DeliveryMessage.Status.RETAINED)
+        )
         .order_by("group_no", "sort_index", "id")
         .values_list("pk", "telegram_message_id")
     )
-    deleted, failed = async_to_sync(_delete_delivery)(binding, delivery.channel.telegram_chat_id, message_items)
+    deleted, retained, failed = async_to_sync(_delete_delivery)(
+        binding,
+        delivery.channel.telegram_chat_id,
+        message_items,
+    )
     DeliveryMessage.objects.filter(pk__in=deleted).update(status=DeliveryMessage.Status.DELETED, deleted_at=timezone.now())
-    delivery.status = Delivery.Status.PARTIAL if failed else Delivery.Status.DELETED
+    DeliveryMessage.objects.filter(pk__in=[pk for pk, _ in retained]).update(
+        status=DeliveryMessage.Status.RETAINED
+    )
+    retained_count = delivery.messages.filter(status=DeliveryMessage.Status.RETAINED).count()
+    if failed:
+        delivery.status = Delivery.Status.PARTIAL
+    elif retained_count:
+        delivery.status = Delivery.Status.RETAINED
+    else:
+        delivery.status = Delivery.Status.DELETED
     delivery.save(update_fields=("status", "updated_at"))
-    return [f"{delivery.channel.title}/{pk}: {error}" for pk, error in failed]
+    errors = [f"{delivery.channel.title}/{pk}: {error}" for pk, error in failed]
+    if retained_count:
+        errors.append(
+            f"{delivery.channel.title}: Telegram 拒绝删除 {retained_count} 条历史消息，"
+            "已标记为远端保留，请手动清理"
+        )
+    return errors, "DELETE_REJECTED" if retained_count else ""
 
 
 def _process_replace(operation: Operation, content: Content):
@@ -432,11 +507,15 @@ def _process_replace(operation: Operation, content: Content):
     successful_channel_ids = set(operation.deliveries.values_list("channel_id", flat=True))
     desired_channel_ids = set(content.channels.values_list("id", flat=True))
     delete_errors = []
+    delete_error_code = ""
     for old in old_deliveries:
         # 新内容发送失败的目标频道保留旧消息；已成功替换或已移除的频道才清理旧消息。
         if old.channel_id in desired_channel_ids and old.channel_id not in successful_channel_ids:
             continue
-        delete_errors.extend(_delete_delivery_record(old))
+        delivery_errors, delivery_error_code = _delete_delivery_record(old)
+        delete_errors.extend(delivery_errors)
+        if delivery_error_code == "DELETE_WINDOW_EXPIRED" or not delete_error_code:
+            delete_error_code = delivery_error_code
         replacement = operation.deliveries.filter(channel_id=old.channel_id).first()
         if replacement and not replacement.replaces_delivery_id:
             replacement.replaces_delivery = old
@@ -445,6 +524,8 @@ def _process_replace(operation: Operation, content: Content):
         operation.state = Operation.State.PARTIAL
         current = [operation.telegram_error_text] if operation.telegram_error_text else []
         operation.telegram_error_text = "；".join(current + delete_errors)
+        if delete_error_code:
+            operation.telegram_error_code = delete_error_code
 
 
 def _try_in_place_media_replace(operation: Operation, content: Content) -> bool:
@@ -454,6 +535,7 @@ def _try_in_place_media_replace(operation: Operation, content: Content) -> bool:
     if not files:
         return False
     file_map = {(item.group_no, item.sort_index): item for item in files}
+    media_paths = _prepare_media_paths(content, files)
     deliveries = list(
         content.deliveries.filter(status=Delivery.Status.ACTIVE)
         .select_related("bot_channel_binding__bot", "channel")
@@ -479,7 +561,12 @@ def _try_in_place_media_replace(operation: Operation, content: Content) -> bool:
             return False
         first_key = min(file_map)
         edits = [
-            (message_map[key].telegram_message_id, file_map[key], key == first_key)
+            (
+                message_map[key].telegram_message_id,
+                file_map[key],
+                key == first_key,
+                media_paths[file_map[key].pk],
+            )
             for key in sorted(file_map)
         ]
         plans.append((delivery, binding, edits, media_messages))

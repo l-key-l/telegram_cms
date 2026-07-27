@@ -69,7 +69,11 @@ def audit_scheduled_task_consistency(*, fix: bool = False) -> dict:
         elif content.status == Content.Status.UNPUBLISHING:
             reason = "内容正在下架"
         elif (
-            content.status in {Content.Status.UNPUBLISHED, Content.Status.PARTIAL}
+            content.status in {
+                Content.Status.UNPUBLISHED,
+                Content.Status.UNPUBLISHED_RETAINED,
+                Content.Status.PARTIAL,
+            }
             and latest_delete_at
             and content.updated_at <= latest_delete_at
         ):

@@ -94,6 +94,15 @@
 - 已经进入 `RUNNING` 的任务只列入复核清单；Worker 自身仍会在发送前根据内容状态和时间配置执行第二道拦截。
 - `0007` 数据迁移自动补扫 `0006` 未覆盖的孤立/失效 Scheduler 队列；巡检命令可在部署后、故障恢复后和日常维护时重复运行。
 
+### 0.10 2026-07-24 异步媒体预处理与删除窗口收敛
+
+- 图片安全副本生成、`processed_file` 保存等 Django ORM 操作全部在同步 Worker 阶段完成；异步 Telegram API 阶段只读取已准备好的本地文件路径，消除 `SynchronousOnlyOperation`。
+- 每个 Delivery 继续记录 `deletable_until`。删除前先检查 Telegram 48 小时窗口，超期批次不再重复请求 Telegram，而是标记为 `RETAINED`。
+- Telegram 明确返回 `message can't be deleted` 时同样标记为远端保留；后续下架或替换任务跳过该批次，避免每轮循环重复输出同一组错误。
+- 新版本发送成功、旧批次因删除窗口保留时，Operation 标记 `PARTIAL` 并写入 `DELETE_WINDOW_EXPIRED` 或 `DELETE_REJECTED`；只显示频道级摘要，不再展开每条永久失败消息。
+- 下架后若仅剩远端保留消息，Content 状态使用 `UNPUBLISHED_RETAINED`；本地循环配置和待执行任务仍按下架规则停止。
+- `0008` 只登记新增状态，不自动扫描业务数据。服务器先运行 `python manage.py audit_retained_deliveries` 预览，再运行 `python manage.py audit_retained_deliveries --fix` 把历史已超期的 `PARTIAL` Delivery 收敛为 `RETAINED`，并为状态变化写入系统审计。
+
 ## 1. 结论先行
 
 建议做一个 **Django 单体应用并全新开发**，不要拆微服务，也不要在 MVP 引入 MongoDB、Redis、Kafka、Go、Java 或 PHP。

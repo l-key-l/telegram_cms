@@ -33,7 +33,7 @@ from .forms import ExternalMessageActionForm
 from .security import decrypt_secret, encrypt_secret
 from .services import attach_files, enqueue_content_operation, enqueue_due_content_operations, render_content_text, telegram_media_source_path
 from .webhook_views import _handle_command
-from .operation_processor import _send_to_telegram, process_operation, resolve_bindings
+from .operation_processor import _prepare_media_paths, _send_to_telegram, process_operation, resolve_bindings
 from .services import enqueue_operation
 from .telegram_api import _parse_channel_reference, resolve_channel_reference
 
@@ -840,9 +840,17 @@ class ManagerFoundationTests(TestCase):
             can_post_messages=True,
             can_delete_messages=True,
         )
-        content = Content.objects.create(owner_user=self.sub1, code="atomic", title="atomic", text="caption")
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="atomic",
+            title="atomic",
+            text="caption",
+            anti_scan_enabled=True,
+        )
         attach_files(content, [image_upload("first.jpg")], group_no=1)
         attach_files(content, [SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4")], group_no=2)
+        files = list(content.files.all())
+        media_paths = _prepare_media_paths(content, files)
 
         class FakeBot:
             def __init__(self):
@@ -868,5 +876,168 @@ class ManagerFoundationTests(TestCase):
 
         with patch("channel_manager.operation_processor.create_bot", return_value=FakeContext()):
             with self.assertRaisesRegex(RuntimeError, "second stage failed"):
-                async_to_sync(_send_to_telegram)(binding, content, list(content.files.all()))
+                async_to_sync(_send_to_telegram)(binding, content, files, media_paths)
         self.assertEqual(fake_bot.deleted, [(self.channel.telegram_chat_id, 101)])
+
+    def test_expired_delivery_is_marked_retained_on_unpublish(self):
+        bot_record = TelegramBot.objects.create(
+            display_name="delete-window",
+            token_ciphertext=encrypt_secret("1:token"),
+            created_by=self.master,
+        )
+        binding = BotChannelBinding.objects.create(
+            bot=bot_record,
+            channel=self.channel,
+            priority=1,
+            can_post_messages=True,
+            can_delete_messages=True,
+        )
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="expired-delete",
+            title="expired-delete",
+            status=Content.Status.PUBLISHED,
+        )
+        content.channels.add(self.channel)
+        delivery = Delivery.objects.create(
+            content=content,
+            channel=self.channel,
+            bot_channel_binding=binding,
+            status=Delivery.Status.ACTIVE,
+            sent_at=timezone.now() - timedelta(days=3),
+            deletable_until=timezone.now() - timedelta(days=1),
+        )
+        message = DeliveryMessage.objects.create(
+            delivery=delivery,
+            telegram_message_id=9001,
+        )
+        operation, _ = enqueue_content_operation(
+            content=content,
+            action=Operation.Action.DELETE,
+            actor=self.sub1,
+        )
+
+        with patch("channel_manager.operation_processor._delete_delivery") as delete_mock:
+            process_operation(operation)
+
+        delete_mock.assert_not_called()
+        operation.refresh_from_db()
+        content.refresh_from_db()
+        delivery.refresh_from_db()
+        message.refresh_from_db()
+        self.assertEqual(operation.state, Operation.State.PARTIAL)
+        self.assertEqual(operation.telegram_error_code, "DELETE_WINDOW_EXPIRED")
+        self.assertEqual(content.status, Content.Status.UNPUBLISHED_RETAINED)
+        self.assertEqual(delivery.status, Delivery.Status.RETAINED)
+        self.assertEqual(message.status, DeliveryMessage.Status.RETAINED)
+
+    def test_telegram_permanent_delete_rejection_is_not_retried(self):
+        bot_record = TelegramBot.objects.create(
+            display_name="delete-rejected",
+            token_ciphertext=encrypt_secret("1:token"),
+            created_by=self.master,
+        )
+        binding = BotChannelBinding.objects.create(
+            bot=bot_record,
+            channel=self.channel,
+            priority=1,
+            can_post_messages=True,
+            can_delete_messages=True,
+        )
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="rejected-delete",
+            title="rejected-delete",
+            status=Content.Status.PUBLISHED,
+        )
+        content.channels.add(self.channel)
+        delivery = Delivery.objects.create(
+            content=content,
+            channel=self.channel,
+            bot_channel_binding=binding,
+            status=Delivery.Status.ACTIVE,
+            sent_at=timezone.now(),
+            deletable_until=timezone.now() + timedelta(days=1),
+        )
+        message = DeliveryMessage.objects.create(
+            delivery=delivery,
+            telegram_message_id=9002,
+        )
+        operation, _ = enqueue_content_operation(
+            content=content,
+            action=Operation.Action.DELETE,
+            actor=self.sub1,
+        )
+
+        rejected = ([], [(message.pk, "Bad Request: message can't be deleted")], [])
+        with patch(
+            "channel_manager.operation_processor._delete_delivery",
+            new=AsyncMock(return_value=rejected),
+        ) as delete_mock:
+            process_operation(operation)
+
+        self.assertEqual(delete_mock.await_count, 1)
+        operation.refresh_from_db()
+        content.refresh_from_db()
+        delivery.refresh_from_db()
+        message.refresh_from_db()
+        self.assertEqual(operation.state, Operation.State.PARTIAL)
+        self.assertEqual(operation.telegram_error_code, "DELETE_REJECTED")
+        self.assertEqual(content.status, Content.Status.UNPUBLISHED_RETAINED)
+        self.assertEqual(delivery.status, Delivery.Status.RETAINED)
+        self.assertEqual(message.status, DeliveryMessage.Status.RETAINED)
+
+        second_operation, _ = enqueue_content_operation(
+            content=content,
+            action=Operation.Action.DELETE,
+            actor=self.sub1,
+            idempotency_key="second-attempt",
+        )
+        with patch("channel_manager.operation_processor._delete_delivery") as second_delete_mock:
+            process_operation(second_operation)
+        second_delete_mock.assert_not_called()
+        second_operation.refresh_from_db()
+        self.assertEqual(second_operation.state, Operation.State.SUCCEEDED)
+
+    def test_retained_delivery_audit_previews_then_fixes_server_data(self):
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="retained-audit",
+            title="retained-audit",
+            status=Content.Status.PARTIAL,
+        )
+        delivery = Delivery.objects.create(
+            content=content,
+            channel=self.channel,
+            status=Delivery.Status.PARTIAL,
+            sent_at=timezone.now() - timedelta(days=3),
+            deletable_until=timezone.now() - timedelta(days=1),
+        )
+        message = DeliveryMessage.objects.create(
+            delivery=delivery,
+            telegram_message_id=9100,
+        )
+
+        preview_output = StringIO()
+        call_command("audit_retained_deliveries", stdout=preview_output)
+        delivery.refresh_from_db()
+        message.refresh_from_db()
+        self.assertEqual(delivery.status, Delivery.Status.PARTIAL)
+        self.assertEqual(message.status, DeliveryMessage.Status.SENT)
+        self.assertIn("发现 1 个", preview_output.getvalue())
+
+        fix_output = StringIO()
+        call_command("audit_retained_deliveries", "--fix", stdout=fix_output)
+        content.refresh_from_db()
+        delivery.refresh_from_db()
+        message.refresh_from_db()
+        self.assertEqual(content.status, Content.Status.UNPUBLISHED_RETAINED)
+        self.assertEqual(delivery.status, Delivery.Status.RETAINED)
+        self.assertEqual(message.status, DeliveryMessage.Status.RETAINED)
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action="delivery.mark_retained",
+                object_id=str(delivery.pk),
+            ).exists()
+        )
+        self.assertIn("已收敛 Delivery 1 个", fix_output.getvalue())

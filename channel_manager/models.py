@@ -143,6 +143,7 @@ class Content(TimeStampedModel):
         PUBLISHED = "PUBLISHED", "已上架"
         UNPUBLISHING = "UNPUBLISHING", "下架处理中"
         UNPUBLISHED = "UNPUBLISHED", "已下架"
+        UNPUBLISHED_RETAINED = "UNPUBLISHED_RETAINED", "已下架（远端有保留）"
         ARCHIVED = "ARCHIVED", "已归档"
         PARTIAL = "PARTIAL", "部分下架"
 
@@ -283,6 +284,7 @@ class Delivery(TimeStampedModel):
         ACTIVE = "ACTIVE", "活动"
         DELETE_PENDING = "DELETE_PENDING", "待删除"
         DELETED = "DELETED", "已删除"
+        RETAINED = "RETAINED", "远端超期保留"
         FAILED = "FAILED", "失败"
         UNKNOWN = "UNKNOWN", "未知"
 
@@ -304,6 +306,7 @@ class DeliveryMessage(TimeStampedModel):
         SENT = "SENT", "已发送"
         EDITED = "EDITED", "已编辑"
         DELETED = "DELETED", "已删除"
+        RETAINED = "RETAINED", "远端超期保留"
         UNKNOWN = "UNKNOWN", "未知"
 
     delivery = models.ForeignKey(Delivery, on_delete=models.CASCADE, related_name="messages")
