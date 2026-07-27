@@ -22,6 +22,7 @@ from .models import (
 )
 from .security import decrypt_secret
 from .services import render_content_text, telegram_media_source_path
+from .task_utils import stop_scheduled_task
 from .telegram_client import create_bot
 
 
@@ -382,32 +383,45 @@ def _process_send(operation: Operation, content: Content):
 
 
 def _process_delete(operation: Operation, content: Content):
+    # 网页和 Telegram 指令入队时会先停任务；Worker 再兜底一次，兼容历史队列和直接入队。
+    stop_scheduled_task(
+        request=None,
+        actor="operation-worker",
+        content=content,
+        reason="CONTENT_UNPUBLISH",
+        source=Operation.Source.SYSTEM,
+        actor_type=Operation.ActorType.SYSTEM,
+    )
     deliveries = content.deliveries.filter(
         status__in=(Delivery.Status.ACTIVE, Delivery.Status.PARTIAL)
     ).select_related("bot_channel_binding__bot", "channel")
     failed = []
-    delete_error_code = ""
     for delivery in deliveries:
-        delivery_errors, delivery_error_code = _delete_delivery_record(delivery)
+        delivery_errors, _ = _delete_delivery_record(delivery)
         failed.extend(delivery_errors)
-        if delivery_error_code == "DELETE_WINDOW_EXPIRED" or not delete_error_code:
-            delete_error_code = delivery_error_code
 
-    retryable_exists = content.deliveries.filter(
+    # 网站下架以停止业务和循环为准。远端仍待人工清理的记录统一收敛，
+    # 以后不再进入循环替换或重复删除。
+    retryable_deliveries = content.deliveries.filter(
         status__in=(Delivery.Status.ACTIVE, Delivery.Status.PARTIAL)
-    ).exists()
+    )
+    for delivery in retryable_deliveries:
+        _mark_delivery_retained(delivery)
+
     retained_exists = content.deliveries.filter(status=Delivery.Status.RETAINED).exists()
-    if retryable_exists:
-        content.status = Content.Status.PARTIAL
-    elif retained_exists:
+    if retained_exists:
         content.status = Content.Status.UNPUBLISHED_RETAINED
+        operation.telegram_error_code = "UNPUBLISH_MANUAL_DELETE"
+        summary = "频道消息需要手动删除，循环任务已停止。"
+        operation.telegram_error_text = (
+            f"{summary} 技术详情：{'；'.join(failed)}" if failed else summary
+        )
     else:
         content.status = Content.Status.UNPUBLISHED
+        operation.telegram_error_code = "UNPUBLISH_DELETED"
+        operation.telegram_error_text = "下架成功，频道消息已删除，循环任务已停止。"
     content.save(update_fields=("status", "updated_at"))
-    operation.state = Operation.State.PARTIAL if failed else Operation.State.SUCCEEDED
-    operation.telegram_error_text = "；".join(failed)
-    if delete_error_code:
-        operation.telegram_error_code = delete_error_code
+    operation.state = Operation.State.SUCCEEDED
 
 
 def _process_sync(operation: Operation, content: Content):

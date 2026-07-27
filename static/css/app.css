@@ -194,6 +194,10 @@ th, td { padding: 10px 9px; border-bottom: 1px solid #e7ecf2; text-align: left; 
 .operation-error { min-width: 260px; max-width: 520px; white-space: normal; overflow-wrap: anywhere; }
 .operation-error summary { cursor: pointer; color: var(--danger); font-weight: 700; }
 .operation-error details div { margin-top: 6px; color: #7f1d1d; }
+.operation-result-success { min-width: 260px; max-width: 520px; color: #228043; font-weight: 700; white-space: normal; }
+.operation-result-warning { min-width: 260px; max-width: 520px; white-space: normal; overflow-wrap: anywhere; }
+.operation-result-warning summary { cursor: pointer; color: #966d00; font-weight: 700; }
+.operation-result-warning details div { margin-top: 6px; color: #7c5b00; }
 .task-table td { vertical-align: top; }
 .task-rule { min-width: 210px; white-space: normal; }
 .task-channels { max-width: 220px; white-space: normal; overflow-wrap: anywhere; }

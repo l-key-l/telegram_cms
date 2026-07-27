@@ -925,11 +925,92 @@ class ManagerFoundationTests(TestCase):
         content.refresh_from_db()
         delivery.refresh_from_db()
         message.refresh_from_db()
-        self.assertEqual(operation.state, Operation.State.PARTIAL)
-        self.assertEqual(operation.telegram_error_code, "DELETE_WINDOW_EXPIRED")
+        self.assertEqual(operation.state, Operation.State.SUCCEEDED)
+        self.assertEqual(operation.telegram_error_code, "UNPUBLISH_MANUAL_DELETE")
+        self.assertIn("频道消息需要手动删除，循环任务已停止", operation.telegram_error_text)
         self.assertEqual(content.status, Content.Status.UNPUBLISHED_RETAINED)
         self.assertEqual(delivery.status, Delivery.Status.RETAINED)
         self.assertEqual(message.status, DeliveryMessage.Status.RETAINED)
+
+    def test_unpublish_deletes_recent_messages_and_stops_cycle(self):
+        bot_record = TelegramBot.objects.create(
+            display_name="recent-delete",
+            token_ciphertext=encrypt_secret("1:token"),
+            created_by=self.master,
+        )
+        binding = BotChannelBinding.objects.create(
+            bot=bot_record,
+            channel=self.channel,
+            priority=1,
+            can_post_messages=True,
+            can_delete_messages=True,
+        )
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="recent-delete",
+            title="recent-delete",
+            status=Content.Status.PUBLISHED,
+            cycle_days=1,
+            cycle_time=time(4, 0),
+            next_run_at=timezone.now() + timedelta(days=1),
+        )
+        content.channels.add(self.channel)
+        delivery = Delivery.objects.create(
+            content=content,
+            channel=self.channel,
+            bot_channel_binding=binding,
+            status=Delivery.Status.ACTIVE,
+            sent_at=timezone.now(),
+            deletable_until=timezone.now() + timedelta(days=1),
+        )
+        message = DeliveryMessage.objects.create(
+            delivery=delivery,
+            telegram_message_id=9000,
+        )
+        scheduled_operation = Operation.objects.create(
+            owner_user=self.sub1,
+            actor_type=Operation.ActorType.SYSTEM,
+            actor_id="scheduler",
+            source=Operation.Source.SCHEDULER,
+            action=Operation.Action.REPLACE,
+            target_type="content",
+            target_id=str(content.pk),
+            idempotency_key="recent-delete-scheduled",
+            state=Operation.State.QUEUED,
+            available_at=timezone.now() + timedelta(hours=1),
+        )
+        operation, _ = enqueue_content_operation(
+            content=content,
+            action=Operation.Action.DELETE,
+            actor=self.sub1,
+        )
+
+        deleted_result = ([message.pk], [], [])
+        with patch(
+            "channel_manager.operation_processor._delete_delivery",
+            new=AsyncMock(return_value=deleted_result),
+        ):
+            process_operation(operation)
+
+        operation.refresh_from_db()
+        scheduled_operation.refresh_from_db()
+        content.refresh_from_db()
+        delivery.refresh_from_db()
+        message.refresh_from_db()
+        self.assertEqual(operation.state, Operation.State.SUCCEEDED)
+        self.assertEqual(operation.telegram_error_code, "UNPUBLISH_DELETED")
+        self.assertEqual(operation.telegram_error_text, "下架成功，频道消息已删除，循环任务已停止。")
+        self.assertEqual(content.status, Content.Status.UNPUBLISHED)
+        self.assertIsNone(content.cycle_days)
+        self.assertIsNone(content.cycle_time)
+        self.assertIsNone(content.next_run_at)
+        self.assertEqual(scheduled_operation.state, Operation.State.CANCELLED)
+        self.assertEqual(delivery.status, Delivery.Status.DELETED)
+        self.assertEqual(message.status, DeliveryMessage.Status.DELETED)
+
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-content-logs", args=[content.pk]))
+        self.assertContains(response, "下架成功，频道消息已删除，循环任务已停止")
 
     def test_telegram_permanent_delete_rejection_is_not_retried(self):
         bot_record = TelegramBot.objects.create(
@@ -981,8 +1062,9 @@ class ManagerFoundationTests(TestCase):
         content.refresh_from_db()
         delivery.refresh_from_db()
         message.refresh_from_db()
-        self.assertEqual(operation.state, Operation.State.PARTIAL)
-        self.assertEqual(operation.telegram_error_code, "DELETE_REJECTED")
+        self.assertEqual(operation.state, Operation.State.SUCCEEDED)
+        self.assertEqual(operation.telegram_error_code, "UNPUBLISH_MANUAL_DELETE")
+        self.assertIn("频道消息需要手动删除，循环任务已停止", operation.telegram_error_text)
         self.assertEqual(content.status, Content.Status.UNPUBLISHED_RETAINED)
         self.assertEqual(delivery.status, Delivery.Status.RETAINED)
         self.assertEqual(message.status, DeliveryMessage.Status.RETAINED)

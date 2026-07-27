@@ -102,6 +102,7 @@
 - 新版本发送成功、旧批次因删除窗口保留时，Operation 标记 `PARTIAL` 并写入 `DELETE_WINDOW_EXPIRED` 或 `DELETE_REJECTED`；只显示频道级摘要，不再展开每条永久失败消息。
 - 下架后若仅剩远端保留消息，Content 状态使用 `UNPUBLISHED_RETAINED`；本地循环配置和待执行任务仍按下架规则停止。
 - `0008` 只登记新增状态，不自动扫描业务数据。服务器先运行 `python manage.py audit_retained_deliveries` 预览，再运行 `python manage.py audit_retained_deliveries --fix` 把历史已超期的 `PARTIAL` Delivery 收敛为 `RETAINED`，并为状态变化写入系统审计。
+- 下架的业务结果与远端删除分开：提交下架立即清空定时/循环配置并取消 Scheduler 队列；48 小时内全部删除成功时显示“下架成功，频道消息已删除，循环任务已停止”，存在远端保留时显示“频道消息需要手动删除，循环任务已停止”。两种情况的网站下架任务都记为成功，远端保留记录以后跳过重复删除。
 
 ## 1. 结论先行
 
