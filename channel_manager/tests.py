@@ -108,6 +108,55 @@ class ManagerFoundationTests(TestCase):
         self.assertContains(response, 'type="checkbox"')
         self.assertNotContains(response, '<select name="channels"')
 
+    def test_upload_page_selects_all_available_channels_by_default(self):
+        second_channel = TelegramChannel.objects.create(
+            title="第二频道", telegram_chat_id=-1001234567891, created_by=self.master
+        )
+        UserChannelAccess.objects.create(user=self.sub1, channel=second_channel)
+
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-content-upload"))
+
+        selected_ids = {int(channel_id) for channel_id in response.context["form"]["channels"].value()}
+        self.assertEqual(selected_ids, {self.channel.pk, second_channel.pk})
+
+    def test_edit_page_selects_all_available_channels_by_default(self):
+        second_channel = TelegramChannel.objects.create(
+            title="第二频道", telegram_chat_id=-1001234567891, created_by=self.master
+        )
+        UserChannelAccess.objects.create(user=self.sub1, channel=second_channel)
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="edit-all",
+            title="甲.全选",
+            text="测试",
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        content.channels.add(self.channel)
+
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-content-edit", args=[content.pk]))
+
+        selected_ids = {int(channel_id) for channel_id in response.context["form"]["channels"].value()}
+        self.assertEqual(selected_ids, {self.channel.pk, second_channel.pk})
+
+    def test_invalid_bound_content_form_keeps_submitted_channel_selection(self):
+        second_channel = TelegramChannel.objects.create(
+            title="第二频道", telegram_chat_id=-1001234567891, created_by=self.master
+        )
+        UserChannelAccess.objects.create(user=self.sub1, channel=second_channel)
+
+        self.client.force_login(self.sub1)
+        response = self.client.post(
+            reverse("user-content-upload"),
+            {"text": "缺少第二阶段媒体", "channels": [self.channel.pk]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        selected_ids = {int(channel_id) for channel_id in response.context["form"]["channels"].value()}
+        self.assertEqual(selected_ids, {self.channel.pk})
+
     def test_master_channel_assignment_uses_checkboxes_and_accepts_multiple_channels(self):
         second_channel = TelegramChannel.objects.create(
             title="第二频道", telegram_chat_id=-1001234567891, created_by=self.master
@@ -117,6 +166,8 @@ class ManagerFoundationTests(TestCase):
         self.assertContains(response, 'class="channel-picker"')
         self.assertContains(response, 'type="checkbox"', count=2)
         self.assertNotContains(response, '<select name="channels"')
+        selected_ids = {int(channel_id) for channel_id in response.context["access_form"]["channels"].value()}
+        self.assertEqual(selected_ids, {self.channel.pk, second_channel.pk})
 
         response = self.client.post(
             reverse("master-subaccount-detail", args=[self.sub1.pk]),
@@ -129,6 +180,31 @@ class ManagerFoundationTests(TestCase):
             set(self.sub1.channel_accesses.values_list("channel_id", flat=True)),
             {self.channel.pk, second_channel.pk},
         )
+
+    def test_subaccount_create_page_selects_all_channels_by_default(self):
+        second_channel = TelegramChannel.objects.create(
+            title="第二频道", telegram_chat_id=-1001234567891, created_by=self.master
+        )
+        self.client.force_login(self.master)
+
+        response = self.client.get(reverse("master-subaccount-create"))
+
+        selected_ids = {int(channel_id) for channel_id in response.context["channel_form"]["channels"].value()}
+        self.assertEqual(selected_ids, {self.channel.pk, second_channel.pk})
+
+    def test_invalid_channel_assignment_keeps_master_submitted_selection(self):
+        TelegramChannel.objects.create(
+            title="第二频道", telegram_chat_id=-1001234567891, created_by=self.master
+        )
+        self.client.force_login(self.master)
+
+        response = self.client.post(
+            reverse("master-subaccount-detail", args=[self.sub1.pk]),
+            {"action": "channels", "channels": [self.channel.pk, "invalid"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["access_form"]["channels"].value(), [str(self.channel.pk), "invalid"])
 
     def test_subaccount_profile_lists_only_its_assigned_channels(self):
         other_channel = TelegramChannel.objects.create(

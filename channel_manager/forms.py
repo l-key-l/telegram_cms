@@ -228,9 +228,12 @@ class ContentForm(forms.ModelForm):
         self.user = user
         super().__init__(*args, **kwargs)
         self.fields["text_variant"].required = False
-        self.fields["channels"].queryset = available_channels_for(user)
-        if self.instance.pk:
-            self.fields["channels"].initial = self.instance.channels.all()
+        available_channels = available_channels_for(user)
+        self.fields["channels"].queryset = available_channels
+        # 新建和编辑页面首次打开时，默认选中当前账号可用的全部频道。
+        # 表单校验失败后的重新渲染仍使用用户本次提交值，避免把手动取消的频道重新勾上。
+        if not self.is_bound:
+            self.initial["channels"] = list(available_channels.values_list("pk", flat=True))
 
     def clean_text_variant(self):
         return self.cleaned_data.get("text_variant") or Content.TextVariant.SIMPLIFIED
@@ -345,6 +348,13 @@ class SubaccountChannelAccessForm(forms.Form):
         required=False,
         widget=forms.CheckboxSelectMultiple(attrs={"class": "channel-check-input"}),
     )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 创建子账号和重新分配频道时，默认勾选当前全部频道。
+        # 已绑定的 POST 表单继续采用主账号本次提交的选择。
+        if not self.is_bound:
+            self.initial["channels"] = list(self.fields["channels"].queryset.values_list("pk", flat=True))
 
     def save(self, user: User):
         selected = self.cleaned_data["channels"]

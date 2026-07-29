@@ -79,10 +79,7 @@ def subaccount_create(request):
 @require_http_methods(["GET", "POST"])
 def subaccount_detail(request, pk: int):
     user = get_object_or_404(User, pk=pk, parent=request.user, role=User.Role.SUB)
-    access_form = SubaccountChannelAccessForm(
-        request.POST or None,
-        initial={"channels": user.channel_accesses.values_list("channel_id", flat=True)},
-    )
+    access_form = SubaccountChannelAccessForm(request.POST or None)
     password_form = PasswordResetByMasterForm(prefix="password")
     if request.method == "POST" and request.POST.get("action") == "channels" and access_form.is_valid():
         before = list(user.channel_accesses.values_list("channel_id", flat=True))
