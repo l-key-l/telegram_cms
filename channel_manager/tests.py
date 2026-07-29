@@ -679,6 +679,81 @@ class ManagerFoundationTests(TestCase):
         self.assertEqual(operation.action, Operation.Action.REPLACE)
         self.assertTrue(operation.request_json["force_resend"])
 
+    def test_scheduled_replace_continues_when_old_messages_are_retained(self):
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="cycle-retained",
+            title="cycle-retained",
+            status=Content.Status.PUBLISHED,
+            cycle_days=2,
+            cycle_time=time(13, 13),
+            next_run_at=timezone.now(),
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        content.channels.add(self.channel)
+        old_delivery = Delivery.objects.create(
+            content=content,
+            channel=self.channel,
+            status=Delivery.Status.ACTIVE,
+            sent_at=timezone.now() - timedelta(days=3),
+            deletable_until=timezone.now() - timedelta(days=1),
+        )
+        old_message = DeliveryMessage.objects.create(
+            delivery=old_delivery,
+            telegram_message_id=8100,
+        )
+        operation, _ = enqueue_content_operation(
+            content=content,
+            action=Operation.Action.REPLACE,
+            actor="scheduler",
+            source=Operation.Source.SCHEDULER,
+            request_json={"force_resend": True, "reason": "SCHEDULED_UPDATE"},
+        )
+        expected_next_run = timezone.now() + timedelta(days=2)
+
+        def fake_send(current_operation, current_content):
+            Delivery.objects.create(
+                content=current_content,
+                channel=self.channel,
+                operation=current_operation,
+                status=Delivery.Status.ACTIVE,
+                sent_at=timezone.now(),
+                deletable_until=timezone.now() + timedelta(hours=48),
+            )
+            current_content.status = Content.Status.PUBLISHED
+            current_content.next_run_at = expected_next_run
+            current_content.save(update_fields=("status", "next_run_at", "updated_at"))
+            current_operation.state = Operation.State.SUCCEEDED
+
+        with patch(
+            "channel_manager.operation_processor._process_send",
+            side_effect=fake_send,
+        ):
+            process_operation(operation)
+
+        operation.refresh_from_db()
+        content.refresh_from_db()
+        old_delivery.refresh_from_db()
+        old_message.refresh_from_db()
+        self.assertEqual(operation.state, Operation.State.SUCCEEDED)
+        self.assertEqual(operation.telegram_error_code, "REPLACE_SENT_OLD_RETAINED")
+        self.assertIn("新内容已发送，历史消息需要手动删除，循环任务继续", operation.telegram_error_text)
+        self.assertEqual(content.status, Content.Status.PUBLISHED)
+        self.assertEqual(content.next_run_at, expected_next_run)
+        self.assertEqual(old_delivery.status, Delivery.Status.RETAINED)
+        self.assertEqual(old_message.status, DeliveryMessage.Status.RETAINED)
+        self.assertTrue(
+            content.deliveries.filter(
+                operation=operation,
+                status=Delivery.Status.ACTIVE,
+            ).exists()
+        )
+
+        self.client.force_login(self.sub1)
+        response = self.client.get(reverse("user-content-logs", args=[content.pk]))
+        self.assertContains(response, "新内容已发送，历史消息需要手动删除，循环任务继续")
+
     def test_bulk_select_can_enqueue_multiple_unpublishes(self):
         first = Content.objects.create(owner_user=self.sub1, code="b1", title="b1", status=Content.Status.PUBLISHED)
         second = Content.objects.create(owner_user=self.sub1, code="b2", title="b2", status=Content.Status.PUBLISHED)

@@ -522,12 +522,16 @@ def _process_replace(operation: Operation, content: Content):
     desired_channel_ids = set(content.channels.values_list("id", flat=True))
     delete_errors = []
     delete_error_code = ""
+    send_state = operation.state
     for old in old_deliveries:
         # 新内容发送失败的目标频道保留旧消息；已成功替换或已移除的频道才清理旧消息。
         if old.channel_id in desired_channel_ids and old.channel_id not in successful_channel_ids:
             continue
         delivery_errors, delivery_error_code = _delete_delivery_record(old)
         delete_errors.extend(delivery_errors)
+        old.refresh_from_db(fields=("status",))
+        if delivery_errors and old.status == Delivery.Status.PARTIAL:
+            _mark_delivery_retained(old)
         if delivery_error_code == "DELETE_WINDOW_EXPIRED" or not delete_error_code:
             delete_error_code = delivery_error_code
         replacement = operation.deliveries.filter(channel_id=old.channel_id).first()
@@ -535,11 +539,19 @@ def _process_replace(operation: Operation, content: Content):
             replacement.replaces_delivery = old
             replacement.save(update_fields=("replaces_delivery",))
     if delete_errors:
-        operation.state = Operation.State.PARTIAL
-        current = [operation.telegram_error_text] if operation.telegram_error_text else []
-        operation.telegram_error_text = "；".join(current + delete_errors)
-        if delete_error_code:
-            operation.telegram_error_code = delete_error_code
+        if send_state == Operation.State.SUCCEEDED:
+            operation.state = Operation.State.SUCCEEDED
+            operation.telegram_error_code = "REPLACE_SENT_OLD_RETAINED"
+            summary = "新内容已发送，历史消息需要手动删除"
+            if content.cycle_days and content.cycle_time and content.next_run_at:
+                summary += "，循环任务继续"
+            operation.telegram_error_text = f"{summary}。技术详情：{'；'.join(delete_errors)}"
+        else:
+            operation.state = Operation.State.PARTIAL
+            current = [operation.telegram_error_text] if operation.telegram_error_text else []
+            operation.telegram_error_text = "；".join(current + delete_errors)
+            if delete_error_code:
+                operation.telegram_error_code = delete_error_code
 
 
 def _try_in_place_media_replace(operation: Operation, content: Content) -> bool:
