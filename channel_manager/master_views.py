@@ -318,7 +318,38 @@ def binding_add(request):
     if request.method == "POST" and form.is_valid():
         binding = form.save()
         audit_event(request=request, actor=request.user, owner_user=request.user, action="telegram.binding.create", object_type="bot_channel_binding", object_id=str(binding.pk), after={"bot_id": binding.bot_id, "channel_id": binding.channel_id, "priority": binding.priority})
-        messages.success(request, "Bot 与频道已绑定，请验证权限。")
+        try:
+            from .telegram_api import verify_binding
+
+            verify_binding(binding)
+            audit_event(
+                request=request,
+                actor=request.user,
+                owner_user=request.user,
+                action="telegram.binding.verify",
+                object_type="bot_channel_binding",
+                object_id=str(binding.pk),
+                after=binding.rights_json,
+            )
+            if binding.can_post_messages and binding.can_delete_messages:
+                messages.success(request, "Bot 与频道已绑定，发布和删除权限自动验证完成。")
+            else:
+                messages.warning(
+                    request,
+                    "Bot 与频道已绑定，但缺少发布或删除权限；请把 Bot 设为频道管理员并补齐权限后重新验证。",
+                )
+        except Exception as exc:
+            audit_event(
+                request=request,
+                actor=request.user,
+                owner_user=request.user,
+                action="telegram.binding.verify",
+                object_type="bot_channel_binding",
+                object_id=str(binding.pk),
+                outcome="FAILED",
+                error_code=exc.__class__.__name__,
+            )
+            messages.warning(request, f"Bot 与频道已绑定，自动验证失败：{exc}。Worker 投递前会再次验证。")
         return redirect("master-telegram")
     return render(request, "master/simple_form.html", {"title": "绑定 Bot 与频道", "subtitle": "优先级 1 表示主 Bot", "form": form})
 
@@ -355,7 +386,10 @@ def binding_verify(request, pk: int):
 
         verify_binding(binding)
         audit_event(request=request, actor=request.user, owner_user=request.user, action="telegram.binding.verify", object_type="bot_channel_binding", object_id=str(binding.pk), after=binding.rights_json)
-        messages.success(request, "频道权限验证完成。")
+        if binding.can_post_messages and binding.can_delete_messages:
+            messages.success(request, "频道发布和删除权限验证完成。")
+        else:
+            messages.warning(request, "权限验证完成，但 Bot 缺少发布或删除权限，请调整频道管理员权限后再次验证。")
     except Exception as exc:
         binding.status = BotChannelBinding.Status.DEGRADED
         binding.save(update_fields=("status", "updated_at"))

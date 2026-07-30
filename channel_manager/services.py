@@ -191,12 +191,17 @@ def telegram_media_source_path(item: ContentFile, *, anti_scan_enabled: bool | N
 
 
 def sync_content_channels(content: Content, channels):
-    ContentChannel.objects.filter(content=content).exclude(channel__in=channels).delete()
+    channels = list(channels)
+    selected_ids = {channel.pk for channel in channels}
+    ContentChannel.objects.filter(content=content).exclude(channel_id__in=selected_ids).delete()
     existing = set(ContentChannel.objects.filter(content=content).values_list("channel_id", flat=True))
     ContentChannel.objects.bulk_create(
         [ContentChannel(content=content, channel=channel) for channel in channels if channel.pk not in existing],
         ignore_conflicts=True,
     )
+    saved_ids = set(ContentChannel.objects.filter(content=content).values_list("channel_id", flat=True))
+    if saved_ids != selected_ids:
+        raise RuntimeError("内容频道保存结果不一致，请重新提交。")
 
 
 def enqueue_content_operation(
@@ -210,6 +215,8 @@ def enqueue_content_operation(
 ) -> tuple[Operation, bool]:
     marker = (idempotency_key or uuid.uuid4().hex).strip()[:64]
     operation_key = f"{action}:{content.pk}:{content.version}:{marker}"
+    payload = dict(request_json or {})
+    payload.setdefault("channel_ids", list(content.channels.order_by("pk").values_list("pk", flat=True)))
     return enqueue_operation(
         owner_user=content.owner_user,
         actor=actor,
@@ -217,7 +224,7 @@ def enqueue_content_operation(
         action=action,
         target_type="content",
         target_id=str(content.pk),
-        request_json=request_json,
+        request_json=payload,
         idempotency_key=operation_key,
     )
 

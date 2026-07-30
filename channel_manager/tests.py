@@ -857,6 +857,150 @@ class ManagerFoundationTests(TestCase):
         self.channel.save(update_fields=("route_policy", "updated_at"))
         self.assertEqual([item.bot.display_name for item in resolve_bindings(self.channel)], ["primary", "backup"])
 
+    def test_unverified_binding_is_verified_before_worker_resolves_it(self):
+        bot = TelegramBot.objects.create(
+            display_name="lazy-verify",
+            token_ciphertext=encrypt_secret("1:token"),
+            created_by=self.master,
+        )
+        binding = BotChannelBinding.objects.create(bot=bot, channel=self.channel, priority=1)
+
+        def fake_verify(current_binding):
+            current_binding.can_post_messages = True
+            current_binding.can_delete_messages = True
+            current_binding.last_verified_at = timezone.now()
+            current_binding.save(
+                update_fields=("can_post_messages", "can_delete_messages", "last_verified_at", "updated_at")
+            )
+
+        with patch("channel_manager.operation_processor.verify_binding", side_effect=fake_verify) as verify_mock:
+            resolved = resolve_bindings(self.channel)
+
+        verify_mock.assert_called_once()
+        self.assertEqual([item.pk for item in resolved], [binding.pk])
+
+    def test_edit_added_channel_is_included_in_next_scheduled_replace(self):
+        second_channel = TelegramChannel.objects.create(
+            title="循环新增频道",
+            telegram_chat_id=-1001234567891,
+            created_by=self.master,
+        )
+        UserChannelAccess.objects.create(user=self.sub1, channel=second_channel)
+        bot = TelegramBot.objects.create(
+            display_name="cycle-bot",
+            telegram_bot_id=998877,
+            token_ciphertext=encrypt_secret("1:token"),
+            created_by=self.master,
+        )
+        first_binding = BotChannelBinding.objects.create(
+            bot=bot,
+            channel=self.channel,
+            priority=1,
+            can_post_messages=True,
+            can_delete_messages=True,
+        )
+        second_binding = BotChannelBinding.objects.create(
+            bot=bot,
+            channel=second_channel,
+            priority=1,
+            can_post_messages=True,
+            can_delete_messages=True,
+        )
+        bindings = {
+            self.channel.pk: first_binding,
+            second_channel.pk: second_binding,
+        }
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="cycle-add-channel",
+            title="甲.新增频道循环",
+            text="原内容",
+            status=Content.Status.PUBLISHED,
+            cycle_days=1,
+            cycle_time=time(4, 0),
+            next_run_at=timezone.now() + timedelta(days=1),
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        content.channels.add(self.channel)
+        attach_files(content, [image_upload("first.jpg")], group_no=1)
+        attach_files(
+            content,
+            [SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4")],
+            group_no=2,
+        )
+
+        self.client.force_login(self.sub1)
+        response = self.client.post(
+            reverse("user-content-edit", args=[content.pk]),
+            {
+                "text": "编辑后的内容",
+                "text_variant": Content.TextVariant.SIMPLIFIED,
+                "channels": [self.channel.pk, second_channel.pk],
+                "cycle_days": "1",
+                "cycle_time": "04:00",
+                "publish_at": "",
+                "delete_file_ids": "",
+                "file_order": "",
+            },
+        )
+        self.assertRedirects(response, reverse("user-content-view", args=[content.pk]), fetch_redirect_response=False)
+        content.refresh_from_db()
+        expected_channel_ids = {self.channel.pk, second_channel.pk}
+        self.assertEqual(set(content.channels.values_list("pk", flat=True)), expected_channel_ids)
+
+        edit_operation = Operation.objects.get(
+            target_id=str(content.pk),
+            action=Operation.Action.REPLACE,
+            source=Operation.Source.WEB,
+        )
+        self.assertEqual(set(edit_operation.request_json["channel_ids"]), expected_channel_ids)
+
+        sent_channel_ids = []
+        message_id = 5000
+
+        def fake_send(channel, current_content, files, media_paths):
+            nonlocal message_id
+            sent_channel_ids.append(channel.pk)
+            message_id += 2
+            return bindings[channel.pk], [
+                (SimpleNamespace(message_id=message_id - 1), 1, 0, "photo"),
+                (SimpleNamespace(message_id=message_id), 2, 0, "video"),
+            ]
+
+        def fake_delete(delivery):
+            delivery.messages.update(status=DeliveryMessage.Status.DELETED, deleted_at=timezone.now())
+            delivery.status = Delivery.Status.DELETED
+            delivery.save(update_fields=("status", "updated_at"))
+            return [], ""
+
+        with patch("channel_manager.operation_processor._send_channel_with_failover", side_effect=fake_send), patch(
+            "channel_manager.operation_processor._delete_delivery_record", side_effect=fake_delete
+        ):
+            process_operation(edit_operation)
+            self.assertEqual(set(sent_channel_ids), expected_channel_ids)
+
+            sent_channel_ids.clear()
+            content.refresh_from_db()
+            content.next_run_at = timezone.now() - timedelta(seconds=1)
+            content.save(update_fields=("next_run_at", "updated_at"))
+            self.assertEqual(enqueue_due_content_operations(), 1)
+            scheduled_operation = Operation.objects.get(
+                target_id=str(content.pk),
+                action=Operation.Action.REPLACE,
+                source=Operation.Source.SCHEDULER,
+            )
+            self.assertEqual(set(scheduled_operation.request_json["channel_ids"]), expected_channel_ids)
+            process_operation(scheduled_operation)
+
+        scheduled_operation.refresh_from_db()
+        self.assertEqual(scheduled_operation.state, Operation.State.SUCCEEDED)
+        self.assertEqual(set(sent_channel_ids), expected_channel_ids)
+        self.assertEqual(
+            set(scheduled_operation.deliveries.values_list("channel_id", flat=True)),
+            expected_channel_ids,
+        )
+
     def test_worker_processes_channel_update_operation(self):
         bot = TelegramBot.objects.create(display_name="channel-admin", token_ciphertext=encrypt_secret("1:token"), created_by=self.master)
         BotChannelBinding.objects.create(bot=bot, channel=self.channel, priority=1, can_change_info=True)

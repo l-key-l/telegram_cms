@@ -23,6 +23,7 @@ from .models import (
 from .security import decrypt_secret
 from .services import render_content_text, telegram_media_source_path
 from .task_utils import stop_scheduled_task
+from .telegram_api import verify_binding
 from .telegram_client import create_bot
 
 
@@ -30,8 +31,8 @@ class AtomicSendRollbackError(RuntimeError):
     """两阶段发送失败且补偿删除未完整完成，远端状态需要人工核对。"""
 
 
-def resolve_bindings(channel, capability: str = "can_post_messages") -> list[BotChannelBinding]:
-    bindings = list(
+def _available_bindings(channel, capability: str) -> list[BotChannelBinding]:
+    return list(
         channel.bot_bindings.filter(
             status=BotChannelBinding.Status.ACTIVE,
             bot__status="ACTIVE",
@@ -40,8 +41,33 @@ def resolve_bindings(channel, capability: str = "can_post_messages") -> list[Bot
         .select_related("bot", "channel")
         .order_by("priority")
     )
+
+
+def resolve_bindings(channel, capability: str = "can_post_messages") -> list[BotChannelBinding]:
+    bindings = _available_bindings(channel, capability)
+    verification_errors = []
     if not bindings:
-        raise RuntimeError(f"频道 {channel.title} 没有具备 {capability} 权限的 Bot 绑定。")
+        unverified = list(
+            channel.bot_bindings.filter(
+                status=BotChannelBinding.Status.ACTIVE,
+                bot__status="ACTIVE",
+                last_verified_at__isnull=True,
+            )
+            .select_related("bot", "channel")
+            .order_by("priority")
+        )
+        for binding in unverified:
+            try:
+                verify_binding(binding)
+            except Exception as exc:
+                verification_errors.append(f"{binding.bot.display_name}: {exc}")
+        bindings = _available_bindings(channel, capability)
+    if not bindings:
+        detail = f" 自动验证失败：{'；'.join(verification_errors)}" if verification_errors else ""
+        raise RuntimeError(
+            f"频道 {channel.title} 没有具备 {capability} 权限的 Bot 绑定，"
+            f"请在主后台完成 Bot ↔ 频道绑定并验证权限。{detail}"
+        )
     if channel.route_policy == TelegramChannel.RoutePolicy.EXPLICIT:
         raise RuntimeError("该频道仍是旧的 EXPLICIT 路由策略，请在主后台改为主 Bot 或安全故障切换。")
     if channel.route_policy != TelegramChannel.RoutePolicy.FAILOVER:
@@ -51,6 +77,16 @@ def resolve_bindings(channel, capability: str = "can_post_messages") -> list[Bot
 
 def resolve_binding(channel, capability: str = "can_post_messages") -> BotChannelBinding:
     return resolve_bindings(channel, capability)[0]
+
+
+def _operation_channel_ids(operation: Operation, content: Content) -> set[int]:
+    raw_ids = operation.request_json.get("channel_ids")
+    if isinstance(raw_ids, list):
+        try:
+            return {int(channel_id) for channel_id in raw_ids}
+        except (TypeError, ValueError):
+            pass
+    return set(content.channels.values_list("id", flat=True))
 
 
 def _assert_operation_permission(operation: Operation, content: Content):
@@ -63,7 +99,7 @@ def _assert_operation_permission(operation: Operation, content: Content):
     }.get(operation.action)
     if not permission:
         return
-    channel_ids = set(content.channels.values_list("id", flat=True))
+    channel_ids = _operation_channel_ids(operation, content)
     allowed_ids = set(
         UserChannelAccess.objects.filter(
             user=content.owner_user,
@@ -336,7 +372,8 @@ def _send_channel_with_failover(
 
 
 def _process_send(operation: Operation, content: Content):
-    channels = list(content.channels.all())
+    channel_ids = _operation_channel_ids(operation, content)
+    channels = list(TelegramChannel.objects.filter(pk__in=channel_ids))
     if not channels:
         raise RuntimeError("内容没有选择发送频道。")
     files = list(content.files.all())
@@ -519,7 +556,7 @@ def _process_replace(operation: Operation, content: Content):
     )
     _process_send(operation, content)
     successful_channel_ids = set(operation.deliveries.values_list("channel_id", flat=True))
-    desired_channel_ids = set(content.channels.values_list("id", flat=True))
+    desired_channel_ids = _operation_channel_ids(operation, content)
     delete_errors = []
     delete_error_code = ""
     send_state = operation.state
