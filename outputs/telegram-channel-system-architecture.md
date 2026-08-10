@@ -118,6 +118,13 @@
 - 每个内容 `SEND/REPLACE/DELETE` Operation 在入队时把当前频道 ID 集合写入 `request_json.channel_ids`；编辑替换和下一次 Scheduler 循环分别使用各自入队时的确定目标，新增频道不会沿用旧任务的频道集合。
 - 新建 Bot ↔ 频道绑定后立即自动验证 Telegram 管理员权限；历史上尚未验证的绑定由 Worker 首次投递时兜底验证。频道缺少绑定或发布权限时，任务错误明确提示到主后台完成绑定与权限验证。
 
+### 0.13 2026-08-10 视频方向标准化
+
+- 原始视频永久保留；Worker 第一次投递前使用 `imageio-ffmpeg` 提供的 FFmpeg 生成独立 `processed_file`，编辑和循环任务复用同一副本，不重复转码。
+- FFmpeg 默认 autorotate 应用 `rotate/display matrix`，再把宽高修正为偶数、清除原始元数据并输出 H.264 `yuv420p` + AAC、`faststart` MP4；画面宽高比保持不变，解决 Desktop、Web 与移动端对旋转元数据解释不一致的问题。
+- 默认 CRF 18、最长处理 1800 秒；`.env` 可通过 `VIDEO_NORMALIZATION_CRF`、`VIDEO_NORMALIZATION_TIMEOUT_SECONDS` 调整，也可用 `FFMPEG_BINARY` 指向系统 FFmpeg。
+- 标准化失败时本次频道投递按现有原子规则失败并记录 FFmpeg 错误，原始视频和既有 Telegram 消息保持不变。
+
 ## 1. 结论先行
 
 建议做一个 **Django 单体应用并全新开发**，不要拆微服务，也不要在 MVP 引入 MongoDB、Redis、Kafka、Go、Java 或 PHP。

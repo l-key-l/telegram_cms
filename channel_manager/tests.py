@@ -8,8 +8,12 @@ from django.utils import timezone
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 from datetime import time, timedelta
+from functools import lru_cache
+from pathlib import Path
+import subprocess
 import tempfile
 from io import BytesIO, StringIO
+import imageio_ffmpeg
 from PIL import Image
 
 from accounts.models import User
@@ -43,6 +47,63 @@ def image_upload(name: str = "photo.jpg", size: tuple[int, int] = (8, 8), image_
     Image.new("RGB", size, color=(10, 20, 30)).save(image_buffer, format=image_format)
     content_type = "image/png" if image_format.upper() == "PNG" else "image/jpeg"
     return SimpleUploadedFile(name, image_buffer.getvalue(), content_type=content_type)
+
+
+@lru_cache(maxsize=2)
+def _video_bytes(rotated: bool = False) -> bytes:
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory(prefix="telegram-test-video-") as temp_dir:
+        base_path = Path(temp_dir) / "base.mp4"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x32:d=0.2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(base_path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        source_path = base_path
+        if rotated:
+            source_path = Path(temp_dir) / "rotated.mp4"
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-display_rotation:v:0",
+                    "90",
+                    "-i",
+                    str(base_path),
+                    "-c",
+                    "copy",
+                    str(source_path),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        return source_path.read_bytes()
+
+
+def video_upload(name: str = "video.mp4", *, rotated: bool = False) -> SimpleUploadedFile:
+    return SimpleUploadedFile(name, _video_bytes(rotated), content_type="video/mp4")
 
 
 class ManagerFoundationTests(TestCase):
@@ -255,7 +316,7 @@ class ManagerFoundationTests(TestCase):
                 "cycle_days": "",
                 "cycle_time": "",
                 "publish_at": "",
-                "files_secondary": SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4"),
+                "files_secondary": video_upload("second.mp4"),
             },
         )
         content = Content.objects.get(owner_user=self.sub1)
@@ -549,7 +610,7 @@ class ManagerFoundationTests(TestCase):
                 "cycle_time": "",
                 "publish_at": "",
                 "files_primary": image_upload("new.jpg"),
-                "files_secondary": SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4"),
+                "files_secondary": video_upload("second.mp4"),
             },
         )
         self.assertRedirects(response, reverse("user-content-view", args=[content.pk]), fetch_redirect_response=False)
@@ -567,7 +628,7 @@ class ManagerFoundationTests(TestCase):
         )
         content.channels.add(self.channel)
         attach_files(content, [image_upload("first.jpg")], group_no=1)
-        attach_files(content, [SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4")], group_no=2)
+        attach_files(content, [video_upload("second.mp4")], group_no=2)
         first = content.files.get(group_no=1)
         second = content.files.get(group_no=2)
         self.client.force_login(self.sub1)
@@ -926,7 +987,7 @@ class ManagerFoundationTests(TestCase):
         attach_files(content, [image_upload("first.jpg")], group_no=1)
         attach_files(
             content,
-            [SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4")],
+            [video_upload("second.mp4")],
             group_no=2,
         )
 
@@ -1067,6 +1128,38 @@ class ManagerFoundationTests(TestCase):
         self.assertLessEqual(max(width, height) / min(width, height), 20)
         self.assertTrue(bool(item.processed_file))
 
+    def test_rotated_video_is_written_upright_for_telegram(self):
+        content = Content.objects.create(
+            owner_user=self.sub1,
+            code="rotated-video",
+            title="rotated-video",
+            created_by=self.sub1,
+            updated_by=self.sub1,
+        )
+        original_bytes = _video_bytes(rotated=True)
+        attach_files(content, [video_upload("phone-portrait.mp4", rotated=True)], group_no=2)
+        item = ContentFile.objects.get(content=content)
+
+        original_reader = imageio_ffmpeg.read_frames(item.file.path)
+        original_meta = next(original_reader)
+        original_reader.close()
+        self.assertEqual(original_meta["source_size"], (64, 32))
+        self.assertEqual(original_meta["size"], (32, 64))
+
+        source_path = telegram_media_source_path(item)
+        item.refresh_from_db()
+        normalized_reader = imageio_ffmpeg.read_frames(source_path)
+        normalized_meta = next(normalized_reader)
+        normalized_reader.close()
+
+        self.assertTrue(bool(item.processed_file))
+        self.assertNotEqual(Path(source_path), Path(item.file.path))
+        self.assertEqual(normalized_meta["source_size"], (32, 64))
+        self.assertEqual(normalized_meta["size"], (32, 64))
+        self.assertEqual(normalized_meta.get("rotate", 0), 0)
+        self.assertEqual(Path(item.file.path).read_bytes(), original_bytes)
+        self.assertEqual(telegram_media_source_path(item), source_path)
+
     def test_worker_replaces_compatible_media_in_place(self):
         bot = TelegramBot.objects.create(display_name="media-editor", token_ciphertext=encrypt_secret("1:token"), created_by=self.master)
         binding = BotChannelBinding.objects.create(
@@ -1143,7 +1236,7 @@ class ManagerFoundationTests(TestCase):
             anti_scan_enabled=True,
         )
         attach_files(content, [image_upload("first.jpg")], group_no=1)
-        attach_files(content, [SimpleUploadedFile("second.mp4", b"video", content_type="video/mp4")], group_no=2)
+        attach_files(content, [video_upload("second.mp4")], group_no=2)
         files = list(content.files.all())
         media_paths = _prepare_media_paths(content, files)
 

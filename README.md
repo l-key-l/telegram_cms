@@ -30,6 +30,8 @@ python -m pip install -r requirements.txt
 
 简繁转换依赖使用纯 Python 包 `opencc-python-reimplemented`，导入名仍是 `opencc`，Linux 部署时不需要额外安装系统级 `libopencc`。
 
+视频发送前使用 `imageio-ffmpeg` 自带的 FFmpeg，把手机视频的 `rotate/display matrix` 写入实际像素并清除旋转元数据。服务器执行 `python -m pip install -r requirements.txt` 后即可使用，一般不需要另外安装系统 FFmpeg；如需指定已有程序，可在 `.env` 设置 `FFMPEG_BINARY=/usr/bin/ffmpeg`。
+
 ## 本地启动
 
 项目固定使用 MySQL。项目根目录的 `.env` 保存本机配置且已加入 `.gitignore`，PyCharm 直接运行时会自动加载。
@@ -117,6 +119,8 @@ PUBLIC_BASE_URL=https://你的公网域名
 部署 HTTPS 域名并配置 `PUBLIC_BASE_URL` 后，在 Bot 卡片点击“启用指令”注册 Webhook。
 
 已上架内容保存编辑后会先发布新版本，成功后删除旧消息；循环自动更新采用同一流程。手动“重发”入口和 Bot `/重发` 指令均已移除。
+
+图片和视频原件始终保留在 `media/contents/`。实际投递时图片使用 Telegram 安全副本，视频使用方向标准化后的 H.264/AAC MP4 副本；副本只生成一次，后续编辑和循环直接复用。
 
 添加频道前可在 `/master/telegram` 使用“频道链接转 Chat ID”：公开频道链接和 `t.me/c/...` 消息链接可直接解析；私有邀请链接需要先把所选 Bot 设为频道管理员，并在频道发送一条新消息让系统收到 `channel_post`。
 

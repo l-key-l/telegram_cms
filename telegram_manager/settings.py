@@ -108,6 +108,12 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = 210 * 1024 * 1024
 DATA_UPLOAD_MAX_NUMBER_FILES = 45
 
+# 视频发送前统一写正旋转元数据，避免 Telegram Desktop/移动端采用不同方向。
+# 留空时使用 imageio-ffmpeg 随平台 wheel 提供的 FFmpeg。
+FFMPEG_BINARY = os.getenv("FFMPEG_BINARY", "").strip()
+VIDEO_NORMALIZATION_TIMEOUT_SECONDS = int(os.getenv("VIDEO_NORMALIZATION_TIMEOUT_SECONDS", "1800"))
+VIDEO_NORMALIZATION_CRF = int(os.getenv("VIDEO_NORMALIZATION_CRF", "18"))
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 LOGIN_URL = "login"

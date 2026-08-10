@@ -3,10 +3,16 @@ from __future__ import annotations
 import hashlib
 import math
 import mimetypes
+import os
+import subprocess
+import tempfile
 import uuid
 from io import BytesIO
 from pathlib import Path
 
+import imageio_ffmpeg
+from django.conf import settings
+from django.core.files import File as DjangoFile
 from django.core.files.base import ContentFile as DjangoContentFile
 from django.db import transaction
 from django.utils import timezone
@@ -182,9 +188,110 @@ def ensure_telegram_safe_photo(item: ContentFile, *, anti_scan_enabled: bool | N
         raise RuntimeError(f"{item.file.name} 图片预处理失败：{exc}") from exc
 
 
+def _ffmpeg_executable() -> str:
+    configured = getattr(settings, "FFMPEG_BINARY", "")
+    if configured:
+        return configured
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:
+        raise RuntimeError("FFmpeg 初始化失败，请检查 imageio-ffmpeg 或 FFMPEG_BINARY 配置") from exc
+
+
+def _subprocess_creation_flags() -> int:
+    return subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def _processed_video_exists(item: ContentFile) -> bool:
+    if not item.processed_file:
+        return False
+    try:
+        path = Path(item.processed_file.path)
+        return path.is_file() and path.stat().st_size > 0
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_telegram_safe_video(item: ContentFile, *, force: bool = False) -> None:
+    """把旋转矩阵写入实际像素并清除方向元数据，输出 Telegram 统一显示的 MP4。"""
+    if item.media_type != ContentFile.MediaType.VIDEO:
+        return
+    if not force and _processed_video_exists(item):
+        return
+
+    ffmpeg = _ffmpeg_executable()
+    timeout = max(60, int(getattr(settings, "VIDEO_NORMALIZATION_TIMEOUT_SECONDS", 1800)))
+    crf = min(35, max(0, int(getattr(settings, "VIDEO_NORMALIZATION_CRF", 18))))
+    with tempfile.TemporaryDirectory(prefix="telegram-video-") as temp_dir:
+        output_path = Path(temp_dir) / "telegram_normalized.mp4"
+        command = [
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            item.file.path,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            # FFmpeg 默认 autorotate 会先应用 rotate/display matrix；随后只把尺寸修正为偶数。
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-map_metadata",
+            "-1",
+            "-metadata:s:v:0",
+            "rotate=0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            str(crf),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                creationflags=_subprocess_creation_flags(),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{item.file.name} 视频方向标准化超时（{timeout} 秒）") from exc
+        except OSError as exc:
+            raise RuntimeError(f"{item.file.name} 启动 FFmpeg 失败：{exc}") from exc
+        if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+            detail = (result.stderr or "FFmpeg 未生成输出文件").strip()[-3000:]
+            raise RuntimeError(f"{item.file.name} 视频方向标准化失败：{detail}")
+
+        old_processed = item.processed_file.name if item.processed_file else ""
+        with output_path.open("rb") as normalized:
+            item.processed_file.save("telegram_normalized.mp4", DjangoFile(normalized), save=True)
+        if old_processed and old_processed != item.processed_file.name:
+            item.processed_file.storage.delete(old_processed)
+
+
 def telegram_media_source_path(item: ContentFile, *, anti_scan_enabled: bool | None = None) -> str:
     if item.media_type == ContentFile.MediaType.PHOTO:
         ensure_telegram_safe_photo(item, anti_scan_enabled=anti_scan_enabled)
+        if item.processed_file:
+            return item.processed_file.path
+    elif item.media_type == ContentFile.MediaType.VIDEO:
+        ensure_telegram_safe_video(item)
         if item.processed_file:
             return item.processed_file.path
     return item.file.path
