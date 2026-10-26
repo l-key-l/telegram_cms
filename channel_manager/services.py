@@ -291,9 +291,11 @@ def telegram_media_source_path(item: ContentFile, *, anti_scan_enabled: bool | N
         if item.processed_file:
             return item.processed_file.path
     elif item.media_type == ContentFile.MediaType.VIDEO:
-        ensure_telegram_safe_video(item)
-        if item.processed_file:
-            return item.processed_file.path
+        # Videos are already accepted as uploaded MP4 files.  Sending the original
+        # avoids a large FFmpeg memory spike for 4K/60fps input.  Do not fall back
+        # to a historical processed_file: old rows may still reference a previous
+        # normalized copy, but new and repeated local uploads must use the original.
+        return item.file.path
     return item.file.path
 
 

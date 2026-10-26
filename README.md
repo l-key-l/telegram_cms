@@ -30,7 +30,7 @@ python -m pip install -r requirements.txt
 
 简繁转换依赖使用纯 Python 包 `opencc-python-reimplemented`，导入名仍是 `opencc`，Linux 部署时不需要额外安装系统级 `libopencc`。
 
-视频发送前使用 `imageio-ffmpeg` 自带的 FFmpeg，把手机视频的 `rotate/display matrix` 写入实际像素并清除旋转元数据。服务器执行 `python -m pip install -r requirements.txt` 后即可使用，一般不需要另外安装系统 FFmpeg；如需指定已有程序，可在 `.env` 设置 `FFMPEG_BINARY=/usr/bin/ffmpeg`。
+视频默认按上传原文件直接发送，不在 Web/Worker 进程中自动调用 FFmpeg 转码。这样可避免 4K/60fps 视频转码时占满服务器内存；上传前请尽量使用 Telegram 客户端兼容的 MP4（H.264/AAC），方向和比例以原文件元数据为准。
 
 ## 本地启动
 
@@ -120,7 +120,7 @@ PUBLIC_BASE_URL=https://你的公网域名
 
 已上架内容保存编辑后会先发布新版本，成功后删除旧消息；循环自动更新采用同一流程。手动“重发”入口和 Bot `/重发` 指令均已移除。
 
-图片和视频原件始终保留在 `media/contents/`。实际投递时图片使用 Telegram 安全副本，视频使用方向标准化后的 H.264/AAC MP4 副本；副本只生成一次，后续编辑和循环直接复用。
+图片和视频原件始终保留在 `media/contents/`。实际投递时图片仍使用 Telegram 安全副本，视频固定读取上传原文件；历史 `processed_file` 即使存在也不会覆盖视频原件。该调整不迁移、不删除既有媒体。
 
 添加频道前可在 `/master/telegram` 使用“频道链接转 Chat ID”：公开频道链接和 `t.me/c/...` 消息链接可直接解析；私有邀请链接需要先把所选 Bot 设为频道管理员，并在频道发送一条新消息让系统收到 `channel_post`。
 

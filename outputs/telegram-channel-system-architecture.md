@@ -125,6 +125,13 @@
 - 默认 CRF 18、最长处理 1800 秒；`.env` 可通过 `VIDEO_NORMALIZATION_CRF`、`VIDEO_NORMALIZATION_TIMEOUT_SECONDS` 调整，也可用 `FFMPEG_BINARY` 指向系统 FFmpeg。
 - 标准化失败时本次频道投递按现有原子规则失败并记录 FFmpeg 错误，原始视频和既有 Telegram 消息保持不变。
 
+### 0.14 2026-10-26 视频原文件直传与内存保护
+
+- 当前决策覆盖 0.13 的自动视频标准化：视频投递固定读取上传原文件，不在 Web/Worker 进程内自动执行 FFmpeg。
+- 现有视频 `processed_file` 仅作为历史兼容数据保留，不删除、不迁移，也不再优先用于投递；图片安全副本逻辑不变。
+- 直接上传避免 4K/60fps 视频转码瞬时占用约 2 GB 内存导致应用和 Worker 被系统 OOM 干预。新视频第一次发送仍受媒体大小、服务器上行和 Telegram 处理耗时影响。
+- 同一 Bot 已缓存的 Telegram `file_id` 继续优先复用，编辑、循环和跨频道发送逻辑不变；若原视频编码、方向元数据或播放兼容性异常，后续使用显式离线处理，不在请求链路自动转码。
+
 ## 1. 结论先行
 
 建议做一个 **Django 单体应用并全新开发**，不要拆微服务，也不要在 MVP 引入 MongoDB、Redis、Kafka、Go、Java 或 PHP。

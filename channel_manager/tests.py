@@ -1128,37 +1128,31 @@ class ManagerFoundationTests(TestCase):
         self.assertLessEqual(max(width, height) / min(width, height), 20)
         self.assertTrue(bool(item.processed_file))
 
-    def test_rotated_video_is_written_upright_for_telegram(self):
+    def test_video_uses_original_file_without_transcoding(self):
         content = Content.objects.create(
             owner_user=self.sub1,
-            code="rotated-video",
-            title="rotated-video",
+            code="direct-video",
+            title="direct-video",
             created_by=self.sub1,
             updated_by=self.sub1,
         )
         original_bytes = _video_bytes(rotated=True)
         attach_files(content, [video_upload("phone-portrait.mp4", rotated=True)], group_no=2)
         item = ContentFile.objects.get(content=content)
+        item.processed_file.save(
+            "legacy-normalized.mp4",
+            SimpleUploadedFile("legacy-normalized.mp4", b"legacy-processed-video", content_type="video/mp4"),
+        )
 
-        original_reader = imageio_ffmpeg.read_frames(item.file.path)
-        original_meta = next(original_reader)
-        original_reader.close()
-        self.assertEqual(original_meta["source_size"], (64, 32))
-        self.assertEqual(original_meta["size"], (32, 64))
+        with patch("channel_manager.services.ensure_telegram_safe_video") as normalize_video:
+            source_path = telegram_media_source_path(item)
 
-        source_path = telegram_media_source_path(item)
         item.refresh_from_db()
-        normalized_reader = imageio_ffmpeg.read_frames(source_path)
-        normalized_meta = next(normalized_reader)
-        normalized_reader.close()
-
+        normalize_video.assert_not_called()
         self.assertTrue(bool(item.processed_file))
-        self.assertNotEqual(Path(source_path), Path(item.file.path))
-        self.assertEqual(normalized_meta["source_size"], (32, 64))
-        self.assertEqual(normalized_meta["size"], (32, 64))
-        self.assertEqual(normalized_meta.get("rotate", 0), 0)
-        self.assertEqual(Path(item.file.path).read_bytes(), original_bytes)
-        self.assertEqual(telegram_media_source_path(item), source_path)
+        self.assertEqual(Path(source_path), Path(item.file.path))
+        self.assertEqual(Path(source_path).read_bytes(), original_bytes)
+        self.assertNotEqual(Path(source_path), Path(item.processed_file.path))
 
     def test_worker_replaces_compatible_media_in_place(self):
         bot = TelegramBot.objects.create(display_name="media-editor", token_ciphertext=encrypt_secret("1:token"), created_by=self.master)
